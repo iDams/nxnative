@@ -65,3 +65,5 @@ tex_flush_upload	on
 tex_dirty_upload	on
 # amiibo: the game's Game/AmiiboSetting file in three variants (scripts/oot_amiibo_overlay.py into the romfs_overlay folder): the daily limit off, the drop chances doubled, or both
 amiibo_overlay	on
+# Pool tables give a finalized texture's ID the dummy instead of making its texture again: about 2.5 GB at the house-to-forest change (upstream PR #1393, open)
+pool_skip_retired	on
