@@ -422,6 +422,13 @@ Frame pacing: the host's frame step, engine frame limiters, present intervals an
 
 ## CPU cost and pacing
 
+### Indirect draw conversions that split the main passes
+
+- **Symptom:** the main depth and colour passes appear twice each in a pass dump, on the same attachments, one ending where the next starts; the pass dump says `indirect draw conversion: render pass split here`, and the conversion line counts about as many splits as runs.
+- **Cause:** an indirect draw Metal cannot take as it is (quads, fans, 8-bit indices) is converted by a compute pass (`ixc_run`), which cannot run inside a render pass. Its look-ahead converts the later such draws up to the next buffer write, and a dispatch or a new submission drops the conversions. A pass opened by an ordinary draw after that met its first indirect draw with no conversion and was ended there: a store and a load of every attachment.
+- **Fix:** general. A split remembers its pass by its attachments (colour 0 and depth, by storage address and shape, `ixc_learn`: Ocarina of Time makes its targets on new texture objects every frame, so serials do not match the next frame). When an ordinary draw opens a pass with those attachments, the commands up to its end (render targets set again, a dispatch or a buffer write) are scanned, and the first such draw is converted now, with what the look-ahead takes after it (`ixc_prepass`); the look-ahead goes on from that draw, so no command is read twice. Passes on other attachments are not scanned. A learned pass that finds nothing for 240 scans is forgotten. `DM_NVN_IXC_PRE=0` turns it off.
+- **Check:** `make -C dm/gfx/tests GAME=<id> check_t_ixc_ahead`: an indirect quad after the draw that opened its pass splits it the first time and not the next, draws its record both times, splits it with `DM_NVN_IXC_PRE=0`; a pass on other attachments is not scanned.
+- **Found on:** [The Legend of Zelda: Ocarina of Time](../../dm/games/0400486024DEC000/README.md#found-on-this-game).
 ### Arena buffer ownership on allocation
 
 - **Symptom:** autorelease work takes a measurable share of replay time, with temporary arena-buffer ownership traffic a few times per draw.
