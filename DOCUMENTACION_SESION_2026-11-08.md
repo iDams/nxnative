@@ -137,13 +137,16 @@ xcrun devicectl device install app --device 00008150-00190C880E3B401C \
 - No borrar: RomFS, `save`/`save_mac`, perfil actual, `pkg_5636`, `tables_5636`, `patched_7f`, biblioteca iOS completa, handoff.
 - Limpieza pendiente cuando se cierre la puesta a punto: `shader/cache_ios` (restos del set parcial, ~5,4 GB), `shader/cache_full` (~8,7 GB de CAS; ya generó el `.img` y c1/cb), `patched_37f` y el worktree `ns_7f` tras consolidar en `ns`.
 
-## 11. Pendiente inmediato
+## 11. Consolidación en `ns` y corrección de 0 FPS / 20 FPS (commits `c178a59c` y `3d0351d7`)
 
-1. **Probar `DM_DYNAMIC_RESOLUTION=1`** (ya en `Documents/env.txt`) en el siguiente arranque y medir Kokiri Forest: si el coste baja de 1 vsync, el frame step debería sostener 60; si sigue fallando, el límite es el encode CPU (~18,5 ms), no la GPU ni los shaders.
-2. **Consolidar `7f502220` + locales + 0096 en `/Users/marco/ns`** (hoy en el worktree `ns_7f`) y eliminar el worktree. Mantener `patched_7f` como módulos de la build instalada.
-3. Si el encode CPU sigue limitando: medir con `DM_NVN_WAITS=1` y `DM_NVN_SKIP_MESH=1` (diagnósticos) para separar el coste de los mesh draws y del submit; evaluar reducir las 8 partes del parche 0096 a las necesarias para OoT (máximo observado 1.771 → 2 partes de 1024) y revisar el paralelismo de encoding (`DM_NVN_ENC_THREAD` ya está en 1 por defecto en iOS).
-4. Actualizar handoff/README con la medición final y el estado de `DM_DYNAMIC_RESOLUTION`.
-5. Limpiar caches y artefactos antiguos según `REGLAS.md`.
+1. **Consolidado `7f502220` + locales + parche 0096 en `/Users/marco/ns`** (`c178a59c`), eliminado el worktree temporal `/Users/marco/Ocarina/ns_7f`, y subido a `origin/main` (`https://github.com/iDams/nxnative.git`).
+2. **Eliminación de caídas a 0 FPS (`3d0351d7`):**
+   - Fusionados los 470 nuevos registros de `Documents/pso_user.tsv` del iPhone (`5` shaders, `403` render PSOs, `62` compute PSOs) en `dm/games/0400486024DEC000/pso_manifest.tsv` (total: 10.098 entradas).
+   - Activada compilación asíncrona no bloqueante de render PSOs en `pso_get_` (`pso_async_on`, por defecto en iOS; `DM_PSO_ASYNC=0` la desactiva) + prebuild de compute PSOs en `mtl_prog_prefetch`, evitando bloqueos de 0,4–3,6 s en el submit thread.
+3. **Eliminación del estancamiento en 20 FPS y piso de 30 FPS (`3d0351d7`):**
+   - Limitado `kmax = 2` en iOS (`fstep_kmax`, piso de 30 FPS; `DM_FPS_FLOOR=20` permite volver a `hold 3`), impidiendo que el gobernador de energía de iOS vea intervalos de 50 ms (`hold 3`), aparque los hilos en núcleos E y baje el reloj de la GPU del A19 Pro de 15 ms a 44 ms.
+   - Ajustado `gslow` en `fstep_tick` para exigir `g_fg.ref >= 0.5` y `(cslow || cpu <= kmin + FSTEP_LATE)`, evitando probes fallidos cada 30 frames contra la referencia de 4 ms del menú 2D.
+4. **App reconstruida, firmada e instalada** en iPhone Dams (`00008150-00190C880E3B401C`) con `PATCHED=/Users/marco/Ocarina/patched_7f`, `DM_ICON=/Users/marco/Ocarina/assets/icon.jpeg`, `DM_COPY_ROMFS=NO`.
 
 ## 12. Advertencias
 
