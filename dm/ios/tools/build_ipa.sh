@@ -59,9 +59,9 @@ if [ "$PREPARE_XCODE" = YES ]; then
 else DM_SCHEME_NAME=DmIOS; fi
 export DM_SCHEME_NAME
 # An NVN game's libraries are the folder b-$V or the one file b-$V.img beside its name (dm/tools/shader_lib.py), read in place: whether they hold a shader, one of their files, the path to what is there
-lib_has() { python3 "$DM/tools/shader_lib.py" has "$1" 2> /dev/null; }
-lib_cat() { python3 "$DM/tools/shader_lib.py" cat "$1" "$2" 2> /dev/null; }
-lib_path() { python3 "$DM/tools/shader_lib.py" path "$1"; }
+lib_has() { [ -f "$1.img" ] || python3 "$DM/tools/shader_lib.py" has "$1" 2> /dev/null; }
+lib_cat() { if [ "$2" = inputs.tsv ] && [ -f "$1/inputs.tsv" ]; then cat "$1/inputs.tsv"; else python3 "$DM/tools/shader_lib.py" cat "$1" "$2" 2> /dev/null; fi; }
+lib_path() { if [ -f "$1.img" ]; then printf '%s.img\n' "$1"; else python3 "$DM/tools/shader_lib.py" path "$1"; fi; }
 # The checks of one program's inputs (GAME, GD, PATCHED, ROMFS, MSL_IOS, GFXAPI, MODS, MARKER as set): every program of a game of several programs passes them
 check_program() {
 [ -f "$PATCHED/main.fixups.tsv" ] || die "no rewritten main in $PATCHED (run dm/tools/patch_nso.py first)"

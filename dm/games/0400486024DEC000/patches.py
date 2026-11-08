@@ -2,6 +2,13 @@
 # MATCH_FRAME_STEP as described there ("Registered patches"). Patches of Nintendo SDK module builds are in dm/tools/sdk_patches.py
 from nso_asm import ADRP, B
 
+CUTS = {
+  # NDVE stopgap: the movie player's NDVE resource is passed null, so the title and movies use the standard MovieRenderer. The 11 NDVE compute shaders are not in the map.
+  'e0f3ccfaf50065ae4ea01eb5aeb13b1a': [
+    (0x3b5c5a4, 'e10313aa', 'e1031faa', 'movie player: NDVE resource argument x1 = x19 -> x1 = xzr (null: the standard MovieRenderer, whose shader is in the map)'),
+  ],
+}
+
 # The game's frame ratio. Once a frame the function at main+0x6e6be0 (v131072) divides its base rate (60.0, or 30.0 while bit 0 of [x21+0x24f] is set) by the int frame rate at
 # [x21+0x2c8] (fdiv s8,s1,s0 at +0xe4) and hands the result to the time object (main+0x3b4e300: ratio at +0x10, 1 / ratio at +0x14, round(60 / ratio) at +0x1c), which the game
 # steps by; the frame's own time never enters it, so a frame that takes two vsyncs at rate 60 plays at half speed. The stub gives the ratio the host's step instead: step × base / 60
@@ -78,6 +85,9 @@ MATCH_FRAME_STEP = {'main': [
 ]}
 
 BINDING = [
+    {'what': 'movie player: the NDVE resource passed as null (stopgap for its 11 shaders that were not extracted)', 'now': 'build', 'goal': 'game', 'purpose': 'shaders',
+     'why': "the movie player's resource selection in this game's own code; a function fingerprint could carry the cut to its updates",
+     'checked': 'the black title movie on the iPhone until the cut, and its playback after it, 2026-11-05'},
     {'what': 'frame ratio from the host\'s step', 'now': 'game', 'goal': 'game', 'purpose': 'frame rate',
      'why': "the game's own frame-ratio division, found by its function's fingerprint on any build that keeps the function",
      'checked': 'v131072 main: one function with this fingerprint, the site and its free registers read by disassembly (2026-11-08)'},

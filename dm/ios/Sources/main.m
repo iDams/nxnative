@@ -163,8 +163,18 @@ static int boot_env(void) {
             if (dm_player_diagnostic_key(k.UTF8String) || [launcher_keys containsObject:k] ||
                 ([launcher_keys containsObject:@"DM_METAL_HUD"] && [k isEqualToString:@"MTL_HUD_ENABLED"])) continue;
 #endif
-            if (!getenv(k.UTF8String)) { setenv(k.UTF8String, v.UTF8String, 0); [from_file addObject:k]; fprintf(stderr, "boot: env %s=%s (%s)\n", k.UTF8String, v.UTF8String, ef.lastPathComponent.UTF8String); }
+            if (!getenv(k.UTF8String)) {
+                setenv(k.UTF8String, v.UTF8String, 0);
+                if (![k isEqualToString:@"DM_OPMODE"]) {
+                    [from_file addObject:k];   // the launcher's Settings keeps DM_OPMODE free, so Docked / Handheld can be changed in game
+                }
+                fprintf(stderr, "boot: env %s=%s (%s)\n", k.UTF8String, v.UTF8String, ef.lastPathComponent.UTF8String);
+            }
         }
+    }
+    if (!getenv("DM_OPMODE")) {
+        setenv("DM_OPMODE", "0", 0);   // the iPhone defaults to Handheld (720p): the memory limit ends the app in Docked mode
+        fprintf(stderr, "boot: env DM_OPMODE=0 (iOS default)\n");
     }
     setenv("DM_ENV_FILE_KEYS", [from_file componentsJoinedByString:@" "].UTF8String, 1);   // the launcher keeps what an env file set (LauncherSettings.swift)
     setenv("DM_ENV_LAUNCH_KEYS", [from_launch componentsJoinedByString:@" "].UTF8String, 1);   // and what the launch environment set (docs/frontends.md, Saved choices)
@@ -179,6 +189,7 @@ static int boot_env(void) {
     setenv("DM_SAVE", [doc stringByAppendingPathComponent:@"save"].fileSystemRepresentation, 0);
     setenv("DM_TEMP", [doc stringByAppendingPathComponent:@"temp"].fileSystemRepresentation, 0);
     setenv("DM_GUEST_FILE_DIR", NSTemporaryDirectory().fileSystemRepresentation, 0);   // DM_GUEST_FILE (hle_svc.c) keeps the guest's memory in files there
+    if (!getenv("DM_GUEST_FILE")) setenv("DM_GUEST_FILE", "1", 0);   // OoT's 9 GB pool: file-backed guest pages stay out of phys_footprint, the figure Jetsam ends the app at
     setenv("DM_FONT_DIR", [[res stringByAppendingPathComponent:@"dm"] stringByAppendingPathComponent:@"font"].fileSystemRepresentation, 0);   // Shared-font stand-ins (standard.ttf / nintendo_ext.ttf): iOS lacks the macOS font path
     aoc_locate();   // add-on content: Documents/aoc, else <App>/aoc; an empty Documents/aoc explicitly selects no DLC
     NSString *pso = [res stringByAppendingPathComponent:@"pso"];   // the pipeline archive made offline (build_ipa.sh, dm/gfx/tools/pso_offline.py): the shader pairs' bases, which the device then does not build

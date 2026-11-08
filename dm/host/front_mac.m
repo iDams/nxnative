@@ -1529,6 +1529,22 @@ void front_run(void (*guest)(void)) {
         [[NSNotificationCenter defaultCenter] addObserverForName:NSWindowWillCloseNotification object:win queue:nil
                                                       usingBlock:^(NSNotification *n) { (void)n; exit(0); }];
         // Lifecycle (hle.h / dm.h): focus lost → 2, focus regained → 1; minimized → 3 + audio paused + GPU suspended, restored → resume (followed by focus regained → 1).
+        // A display that sleeps, a locked screen, a hidden app, a session switch or a window another app covers is a pause too: the game would otherwise keep
+        // rendering into a window nobody sees, and its moving render targets add about 2 GB of Metal textures per 300 frames (open in the OoT note) until RAM is gone.
+        // g_susp is a set of reasons: the game pauses while any is set and resumes when the last clears; the focus state is 3 while paused, then 1/2.
+        static unsigned g_susp;
+        void (^susp_apply)(void) = ^{
+            static unsigned applied;
+            if (g_susp == applied) return;
+            applied = g_susp;
+            if (g_susp) {
+                LOG("front end: game suspended (0x%x: minimized, covered, sleep, screens, session or lock)", g_susp);
+                input_release(); dm_focus_set(3); dm_audio_suspend(1); dm_gfx_suspend(1);
+            } else {
+                LOG("front end: game resumed");
+                dm_gfx_suspend(0); dm_audio_suspend(0); dm_focus_set(g_win.isKeyWindow ? 1 : 2);
+            }
+        };
         // Input is released when the window stops being key (and when it is minimized) and taken up again when it is key again
         NSNotificationCenter *nc = NSNotificationCenter.defaultCenter;
         [nc addObserverForName:NSWindowDidChangeScreenNotification object:win queue:nil usingBlock:^(NSNotification *n) { (void)n; screen_refresh(win.screen); if (win.screen) g_layer.contentsScale = win.backingScaleFactor; screen_match_apply(); }];
@@ -1542,8 +1558,22 @@ void front_run(void (*guest)(void)) {
         static int keep = -1; if (keep < 0) keep = getenv("DM_FOCUS_KEEP") && atoi(getenv("DM_FOCUS_KEEP"));
         [nc addObserverForName:NSWindowDidResignKeyNotification object:win queue:nil usingBlock:^(NSNotification *n) { (void)n; input_release(); if (!win.miniaturized && !g_text_box && !keep) dm_focus_set(2); }];
         [nc addObserverForName:NSWindowDidBecomeKeyNotification object:win queue:nil usingBlock:^(NSNotification *n) { (void)n; input_resume(); dm_focus_set(1); }];
-        [nc addObserverForName:NSWindowDidMiniaturizeNotification object:win queue:nil usingBlock:^(NSNotification *n) { (void)n; input_release(); dm_focus_set(3); dm_audio_suspend(1); dm_gfx_suspend(1); }];
-        [nc addObserverForName:NSWindowDidDeminiaturizeNotification object:win queue:nil usingBlock:^(NSNotification *n) { (void)n; dm_gfx_suspend(0); dm_audio_suspend(0); dm_focus_set(2); }];
+        [nc addObserverForName:NSWindowDidMiniaturizeNotification object:win queue:nil usingBlock:^(NSNotification *n) { (void)n; g_susp |= 1; susp_apply(); }];
+        [nc addObserverForName:NSWindowDidDeminiaturizeNotification object:win queue:nil usingBlock:^(NSNotification *n) { (void)n; g_susp &= ~1u; susp_apply(); }];
+        [nc addObserverForName:NSWindowDidChangeOcclusionStateNotification object:win queue:nil usingBlock:^(NSNotification *n) {
+            (void)n; if (win.occlusionState & NSWindowOcclusionStateVisible) g_susp &= ~2u; else g_susp |= 2; susp_apply(); }];
+        NSNotificationCenter *wsnc = NSWorkspace.sharedWorkspace.notificationCenter;   // system sleep, display sleep and fast user switching
+        [wsnc addObserverForName:NSWorkspaceWillSleepNotification object:nil queue:nil usingBlock:^(NSNotification *n) { (void)n; g_susp |= 4; susp_apply(); }];
+        [wsnc addObserverForName:NSWorkspaceDidWakeNotification object:nil queue:nil usingBlock:^(NSNotification *n) { (void)n; g_susp &= ~4u; susp_apply(); }];
+        [wsnc addObserverForName:NSWorkspaceScreensDidSleepNotification object:nil queue:nil usingBlock:^(NSNotification *n) { (void)n; g_susp |= 8; susp_apply(); }];
+        [wsnc addObserverForName:NSWorkspaceScreensDidWakeNotification object:nil queue:nil usingBlock:^(NSNotification *n) { (void)n; g_susp &= ~8u; susp_apply(); }];
+        [wsnc addObserverForName:NSWorkspaceSessionDidResignActiveNotification object:nil queue:nil usingBlock:^(NSNotification *n) { (void)n; g_susp |= 16; susp_apply(); }];
+        [wsnc addObserverForName:NSWorkspaceSessionDidBecomeActiveNotification object:nil queue:nil usingBlock:^(NSNotification *n) { (void)n; g_susp &= ~16u; susp_apply(); }];
+        NSDistributedNotificationCenter *dnc = NSDistributedNotificationCenter.defaultCenter;   // the lock screen, before the window resigns key
+        [dnc addObserverForName:@"com.apple.screenIsLocked" object:nil queue:nil usingBlock:^(NSNotification *n) { (void)n; g_susp |= 32; susp_apply(); }];
+        [dnc addObserverForName:@"com.apple.screenIsUnlocked" object:nil queue:nil usingBlock:^(NSNotification *n) { (void)n; g_susp &= ~32u; susp_apply(); }];
+        [nc addObserverForName:NSApplicationDidHideNotification object:nil queue:nil usingBlock:^(NSNotification *n) { (void)n; g_susp |= 64; susp_apply(); }];
+        [nc addObserverForName:NSApplicationDidUnhideNotification object:nil queue:nil usingBlock:^(NSNotification *n) { (void)n; g_susp &= ~64u; susp_apply(); }];
         display_awake(win.isKeyWindow);   // the window may have become key (makeKeyAndOrderFront above) before these observers were installed
         // Guest thread: 64 MiB stack (the Switch main thread stack is specified by npdm; the host gives plenty)
         static guest_arg ga; ga.fn = guest;
