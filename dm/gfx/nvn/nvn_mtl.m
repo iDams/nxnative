@@ -8627,11 +8627,7 @@ static int pso_async_on(void) {
     static int v = -1;
     if (v < 0) {
         const char *e = getenv("DM_PSO_ASYNC");
-#if TARGET_OS_IOS
-        v = e ? strcmp(e, "0") != 0 : 1;
-#else
         v = e && !strcmp(e, "1");
-#endif
         if (v) MLOG("async render pipelines on: uncached draw pipelines compile in the background without stalling the submit thread (DM_PSO_ASYNC=0 turns it off)");
     }
     return v;
@@ -12975,10 +12971,6 @@ void mtl_prog_prefetch(const prog_t *cp) {
             if (sh && st == 0 && sh->has_pull && !sh->layer_out && hybrid_on()) pull_load(sh);   // its pulling entry too, as the prewarm does (warm_shader)
             if (!sh) return;
             WarmItem *item = [WarmItem new]; item->kind = 0; item->record = 1; item->key = pc; item->shader = sh; warm_enqueue(item);
-            if (st == 5 && sh->fn) {
-                NSError *ce = nil; id<MTLComputePipelineState> cps = cps_new(sh->fn, &ce);
-                if (cps) { WarmItem *ci = [WarmItem new]; ci->kind = 2; ci->record = 1; ci->key = pc; ci->shader = sh; ci->object = cps; warm_enqueue(ci); }
-            }
             if (!g_progpf_loaded++) MLOG("shader prefetch at program creation: first library %s loaded in the background (DM_NVN_PREFETCH=0 turns it off)", pc.UTF8String);
         } });
     }
