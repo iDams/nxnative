@@ -669,15 +669,26 @@ static void mtk_encode(id<MTLRenderCommandEncoder> en_) {
     id<MTL4RenderCommandEncoder> en = (id<MTL4RenderCommandEncoder>)en_; NvShader *ts = g_mtk.ts, *ms = g_mtk.ms;
     [en setArgumentTable:g_vt atStages:MTLRenderStageMesh];
     MTLSize to = MTLSizeMake(ts ? ts->mesh_threads : 1, 1, 1), tm = MTLSizeMake(ms->mesh_threads, 1, 1);
-    if (ts || ms->mesh_obj) {
+    if (ts) {
+        uint64_t first_gpu = g_mtk.ind_rec + 4;
+        if (!g_mtk.ind) { id<MTLBuffer> b; size_t o = arena_alloc(16, &b); memcpy((uint8_t *)b.contents + o, &g_mtk.first, 4); first_gpu = b.gpuAddress + o; }
+        [en setArgumentTable:g_ot atStages:MTLRenderStageObject];
+        g_args_dirty[3] = 1; encode_args(en, ts, 3, 0);
+        if (rec_on()) rec_table_op(RO_T_ADDR, g_ot, first_gpu, DMSH_MESH_DRAW_SLOT); else [g_ot setAddress:first_gpu atIndex:DMSH_MESH_DRAW_SLOT];
+        g_args_dirty[4] = 1; encode_args(en, ms, 4, 1);
+        enc_r_vbuf(en, DMSH_MESH_DRAW_SLOT, first_gpu);
+        if (g_mtk.ind) [en drawMeshThreadgroupsWithIndirectBuffer:g_mtk.ind threadsPerObjectThreadgroup:to threadsPerMeshThreadgroup:tm];
+        else [en drawMeshThreadgroups:MTLSizeMake(g_mtk.count, 1, 1) threadsPerObjectThreadgroup:to threadsPerMeshThreadgroup:tm];
+        return;
+    }
+    if (ms->mesh_obj) {
         uint64_t draw_gpu = g_mtk.ind_rec;
         if (!g_mtk.ind) { id<MTLBuffer> b; size_t o = arena_alloc(16, &b); uint32_t rec[2] = {g_mtk.count, g_mtk.first}; memcpy((uint8_t *)b.contents + o, rec, 8); draw_gpu = b.gpuAddress + o; }
         [en setArgumentTable:g_ot atStages:MTLRenderStageObject];
-        if (ts) { g_args_dirty[3] = 1; encode_args(en, ts, 3, 0); }
         if (rec_on()) rec_table_op(RO_T_ADDR, g_ot, draw_gpu, DMSH_MESH_DRAW_SLOT); else [g_ot setAddress:draw_gpu atIndex:DMSH_MESH_DRAW_SLOT];
         g_args_dirty[4] = 1; encode_args(en, ms, 4, 1);
-        if (g_mtk.ind) [en drawMeshThreadgroupsWithIndirectBuffer:g_mtk.ind + (ts ? 0 : 16) threadsPerObjectThreadgroup:to threadsPerMeshThreadgroup:tm];
-        else [en drawMeshThreadgroups:MTLSizeMake(ts ? g_mtk.count : (g_mtk.count + DMSH_MESH_GRID - 1) / DMSH_MESH_GRID, 1, 1) threadsPerObjectThreadgroup:to threadsPerMeshThreadgroup:tm];
+        if (g_mtk.ind) [en drawMeshThreadgroupsWithIndirectBuffer:g_mtk.ind + 16 threadsPerObjectThreadgroup:to threadsPerMeshThreadgroup:tm];
+        else [en drawMeshThreadgroups:MTLSizeMake((g_mtk.count + DMSH_MESH_GRID - 1) / DMSH_MESH_GRID, 1, 1) threadsPerObjectThreadgroup:to threadsPerMeshThreadgroup:tm];
         return;
     }
     // No task and no object function (chain 39417042cfe8): 8 parts of at most MDX_MESH_GRID
