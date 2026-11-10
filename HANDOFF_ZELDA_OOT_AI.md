@@ -171,18 +171,25 @@ xcrun devicectl device process launch \
 
 ---
 
-## 9. Actualización 60 FPS + MetalFX `agl_ndsr_vr` + 720p Fijo (2026-11-10)
+## 9. Actualización 60 FPS + MetalFX `agl_ndsr_vr` + Dispatches Overlap (2026-11-10)
 
-Sobre la base estable `v1.0-oot-30fps-stable` (`d0a4b0e3`), la rama `main` incluye las optimizaciones para **60 FPS en iPhone** sin cambiar `DMSH_CHAIN` (`"39417042cfe8"`):
+Sobre la base estable `v1.0-oot-30fps-stable` (`d0a4b0e3`), la rama `main` en `fa74c4e0` incorpora las optimizaciones verificadas de GPU para **60 FPS en iPhone** sin tocar `DMSH_CHAIN` (`"39417042cfe8"`):
 
 1. **Escalador encadenado `agl_ndsr_vr` / `agl_ndsr_vr_light` por MetalFX (`PR #1951` — `69f2c1cf`, `3666f414`):** Registra los 37 compute shaders de `agl_ndsr_vr(_light).pck` en `DM_GAME_UPSCALER_CHAIN_KEYS`. Con `DM_UPSCALER=metalfx`, `up_chain_dispatch` omite los 3 dispatches de empaquetado intermedio y reemplaza la red neuronal final por `MTL4FXSpatialScaler` en hardware (~4.4 ms → ~0.5 ms de GPU por cuadro).
 2. **Solapamiento de Compute Dispatches (`dispatch_overlap on` — `73acf68c`):** Los 117 compute dispatches al inicio de cada frame en Kokiri Forest corren en paralelo cuando el juego no emite `nvnCommandBufferBarrier` entre ellos (~5.7 ms → ~2.6 ms de GPU por cuadro).
-3. **Región `mem_alias` de 8 GB (`mem_alias 0x200000000`, `mem_reserve 0x468000000`):** Evita que el hilo `OptimizeChangeBanc` (`main+0xf7a0`) agote la región alias de 4 GB y consuma un núcleo completo de CPU al 100%.
-4. **Overlay 720p Handheld Fijo (`romfs_overlay/Pack/Bootup.Nin_Ounce_NVN2.pack.zs`):** Generado con `scripts/oot_res_overlay.py ... 0.666667 - flat` (`1280×720` fijo en todos los niveles) e incluido automáticamente dentro de `DmIOS.app/romfs_overlay` (107 KB).
-5. **Migración automática a 60 FPS en `main.m` (`# v60-metalfx`):** Al iniciar por primera vez esta versión, `main.m` actualiza `Documents/env.txt` en el iPhone con `DM_UPSCALER=metalfx` y deja libre el selector **Frame rate (30 fps / 60 fps)** en el menú del Launcher del iPhone (con **60 fps** por defecto).
-6. **Mejoras upstream de streaming y uniformes (`62670d62`, `33163971`, `1aa019a0`, `ee0c7ba0`):** `pool_peek` sin inflar chunks de 80 MB (PR #2085), `ubc_wait` sin contención de mutex (PR #2078), marcas de lectura de texturas preservadas en streaming (PR #2022) y colores stand-in en texturas de pool (PR #2075).
+3. **Memoria estable y probada (`mem_reserve 0x320000000`, `mem_alias 0x100000000`):** Se mantiene el layout de 12.5 GB / 4 GB alias comprobado como 100% estable en el iPhone 17 Pro Max (el experimento de 17.6 GB provocaba sig=11 al inicio por saturar el espacio de direcciones en iOS).
+4. **Mejoras upstream de streaming y uniformes (`62670d62`, `33163971`, `1aa019a0`, `ee0c7ba0`):** `pool_peek` sin inflar chunks de 80 MB (PR #2085), `ubc_wait` sin contención de mutex (PR #2078), marcas de lectura de texturas preservadas en streaming (PR #2022) y colores stand-in en texturas de pool (PR #2075).
+5. **Configuración de `Documents/env.txt` para 60 FPS:**
+   ```text
+   DM_FPS_TARGET=60
+   DM_DYNAMIC_RESOLUTION=1
+   DM_UPSCALER=metalfx
+   DM_THERMAL_CAP=0
+   DM_QOS_MAP=1
+   DM_QOS_EDGES=45,59
+   ```
 
-### Comando único para instalar al llegar a casa (app ya compilada y firmada)
+### Comando para lanzar o reinstalar
 ```bash
 xcrun devicectl device install app \
   --device 00008150-00190C880E3B401C \
