@@ -16,12 +16,14 @@
 
 ---
 
-## 1. Repositorios Base y Puntos de Restauración
+## 1. Repositorios Base, Referencias Comunitarias y Puntos de Restauración
 
-| Repositorio | URL Remota | Rama / Tag Estable | Rol |
+| Repositorio / Fuente | URL Remota | Rama / Tag Estable | Rol |
 | :--- | :--- | :--- | :--- |
 | **nxnative (Fork Privado)** | `https://github.com/iDams/nxnative.git` | `main` / Tag: **`v1.0-oot-30fps-stable`** / Rama: **`stable/oot-30fps`** | Motor nativo de recompilación para Switch / Switch 2 en Apple Silicon / iOS. Clonado local en `/Users/marco/ns`. |
-| **nxnative (Upstream)** | `https://github.com/seedds/nxnative.git` | `main` (incluye PR #1852) | Repositorio upstream original del motor `dm`. |
+| **nxnative (Upstream)** | `https://github.com/seedds/nxnative.git` | `main` (incluye [PR #1852](https://github.com/seedds/nxnative/pull/1852)) | Repositorio upstream original del motor `dm` (revisar PRs de rendimiento, Metal 4 y `0400486024DEC000`). |
+| **kid-with-sword-remake (cheemu21)** | `https://github.com/cheemu21/kid-with-sword-remake/releases` | Releases (`v22+`) | Builds y parches comunitarios específicos para *Zelda: Ocarina of Time* (Switch 2). Revisar periódicamente sus notas de release y commits embebidos para nuevas optimizaciones de OoT. |
+| **NX2Apple (Frontend & Perfiles)** | `https://github.com/LNPANDY/NX2Apple` | `main` | Frontend comunitario y parches iOS sobre `nxnative`. |
 | **Entorno Local del Motor** | Ruta: `/Users/marco/ns` | Local (`main`) | Código fuente del motor (`dm`). |
 | **Entorno del Proyecto Zelda**| Ruta: `/Users/marco/Ocarina` | Local | Workspace con proyecto Xcode, binarios parcheados, shaders y scripts. |
 

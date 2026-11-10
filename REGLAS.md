@@ -56,3 +56,7 @@ Estas reglas son obligatorias para cualquier agente o desarrollador que toque es
 - Mantener actualizado `HANDOFF_ZELDA_OOT_AI.md` (una copia en `/Users/marco/ns` y otra en `/Users/marco/Ocarina`) con: commit del motor, cadena de shaders, perfil, rutas, memoria medida, problemas abiertos y comandos.
 - Cada cambio de perfil, shader o host que afecte al juego se anota en la nota `dm/games/0400486024DEC000/README.md`.
 - No dejar notas temporales sueltas; van al handoff o a este archivo.
+- **Fuentes de seguimiento para mejoras de OoT:**
+  - `https://github.com/cheemu21/kid-with-sword-remake/releases` (releases específicas de *Ocarina of Time* Switch 2).
+  - `https://github.com/seedds/nxnative` y `https://github.com/seedds/nxnative/pull/1852` (upstream `nxnative`).
+  - `https://github.com/LNPANDY/NX2Apple` (parches iOS).
