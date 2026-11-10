@@ -63,3 +63,5 @@ dispatch_overlap	on
 # As Tears of the Kingdom: the terrain's height, blend and hole maps are written by the CPU into textures after they are created. Without these keys they stay zero: holes in the ground and the wrong materials
 tex_flush_upload	on
 tex_dirty_upload	on
+# amiibo: the game's Game/AmiiboSetting file in three variants (scripts/oot_amiibo_overlay.py into the romfs_overlay folder): the daily limit off, the drop chances doubled, or both
+amiibo_overlay	on
