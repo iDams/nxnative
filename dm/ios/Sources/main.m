@@ -153,6 +153,16 @@ static int boot_env(void) {
     NSDictionary *settings_file = settings_data ? [NSJSONSerialization JSONObjectWithData:settings_data options:0 error:nil] : nil;
     for (NSDictionary *row in settings_file[@"settings"]) if ([row[@"env"] isKindOfClass:NSString.class]) [launcher_keys addObject:row[@"env"]];
 #endif
+    {
+        NSString *doc_env = [doc stringByAppendingPathComponent:@"env.txt"];
+        NSString *old_env = [NSString stringWithContentsOfFile:doc_env encoding:NSUTF8StringEncoding error:nil];
+        if (!old_env || ![old_env hasPrefix:@"# v60-metalfx"]) {
+            [@"# v60-metalfx\nDM_UPSCALER=metalfx\nDM_THERMAL_CAP=0\nDM_QOS_MAP=1\nDM_QOS_EDGES=45,59\n" writeToFile:doc_env atomically:YES encoding:NSUTF8StringEncoding error:nil];
+            [NSUserDefaults.standardUserDefaults removeObjectForKey:@"launcher.DM_FPS_TARGET"];
+            [NSUserDefaults.standardUserDefaults removeObjectForKey:@"launcher.DM_DYNAMIC_RESOLUTION"];
+            [NSUserDefaults.standardUserDefaults setObject:@"metalfx" forKey:@"launcher.DM_UPSCALER"];
+        }
+    }
     for (NSString *ef in @[[doc stringByAppendingPathComponent:@"env.txt"], [[res stringByAppendingPathComponent:@"dm"] stringByAppendingPathComponent:@"env.txt"]]) {
         NSString *txt = [NSString stringWithContentsOfFile:ef encoding:NSUTF8StringEncoding error:nil];
         for (NSString *raw in [txt componentsSeparatedByCharactersInSet:NSCharacterSet.newlineCharacterSet]) {
@@ -230,6 +240,10 @@ static NSString *program_env(void) {
     if (!romfs) return nil;
     fprintf(stderr, "boot: game files %s\n", romfs.fileSystemRepresentation);
     setenv("DM_ROMFS", romfs.fileSystemRepresentation, 0);
+    {   // game file replacements packed beside the RomFS (build_ipa.sh / stage_resources.sh: a romfs_overlay folder), served over it (hle_fs.c DM_ROMFS_OVERLAY)
+        NSString *ov = [res stringByAppendingPathComponent:prog ? [prog stringByAppendingPathComponent:@"romfs_overlay"] : @"romfs_overlay"]; BOOL dir = NO;
+        if ([fm fileExistsAtPath:ov isDirectory:&dir] && dir) { setenv("DM_ROMFS_OVERLAY", ov.fileSystemRepresentation, 0); fprintf(stderr, "boot: game file replacements %s\n", getenv("DM_ROMFS_OVERLAY")); }
+    }
     setenv("DM_NVN_SHMAP", [dmdir stringByAppendingPathComponent:@"shader_map.tsv"].fileSystemRepresentation, 0);
     setenv("DM_MSL_DIR", msl.fileSystemRepresentation, 0);
     return dmdir;

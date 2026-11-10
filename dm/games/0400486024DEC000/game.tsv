@@ -25,9 +25,10 @@ zip_store	.zs:.bwav:.webm:.metallib
 
 # ---- Memory ----
 # The Switch 2 leaves games 9 GB of its 12 GB (Donkey Kong Bananza's figure). The NPDM declares 48 MB of system resource, so virtual address memory is on.
-# nninitStartup asks SetHeapSize 0x18ce00000 (6.2 GB) with the 9 GB pool, as Mario Kart World. 256 MB in front + 4 GB alias region + 256 MB stack region + 8 GB heap region: a starting split, to be measured
-mem_reserve	0x320000000
-mem_alias	0x100000000
+# The alias region holds the game's streaming allocator (main+0x7ed630): in Kokiri Forest it maps up to +4.5-4.75 GB of address regions. With <4.5 GB the allocator runs out and
+# the OptimizeChangeBanc thread (main+0xf7a0) retries in a loop spinning a whole CPU core (997 ms/s). 8 GB alias region + 17.625 GB reserve keeps OptimizeChangeBanc asleep
+mem_reserve	0x468000000
+mem_alias	0x200000000
 mem_map_limit	on
 mem_stack	0x10000000
 app_pool	0x240000000

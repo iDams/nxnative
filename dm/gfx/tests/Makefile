@@ -123,10 +123,10 @@ t_cpu_tex: t_cpu_tex.m $(MTL_T_DEP)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_cpu_tex.m $(filter-out ../nvn/hle_nvn.c,$(MTL_T_SRC)) $(FW)
 # The game's dispatches side by side in the copy encoder where no barrier of its and nothing else lies between them (dispatch_enc, DM_NVN_DISPATCH_OVERLAP)
 t_dispatch_overlap: t_dispatch_overlap.m $(MTL_T_DEP)
-	clang $(CFLAGS) -fobjc-arc -o $@ t_dispatch_overlap.m $(filter-out ../nvn/hle_nvn.c,$(MTL_T_SRC)) $(FW)
+	clang $(CFLAGS) -fobjc-arc -o $@ t_dispatch_overlap.m $(MTL_T_SRC) $(FW)
 .PHONY: check_t_dispatch_overlap
 check_t_dispatch_overlap: t_dispatch_overlap
-	MTL_DEBUG_LAYER=1 ./t_dispatch_overlap --metal
+	MTL_DEBUG_LAYER=1 ./t_dispatch_overlap
 .PHONY: check_t_cpu_tex
 check_t_cpu_tex: t_cpu_tex
 	MTL_DEBUG_LAYER=1 ./t_cpu_tex --metal

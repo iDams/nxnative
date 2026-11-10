@@ -214,3 +214,12 @@ From an empty save: at about 45 s `A` (title), `A` (New Game), then the movie. F
   2. **30 FPS Frame Pacing & Thermal Stability (`5dc2c86a`, PR #1852):** `present_snap on`, `link_latency30 2`, `fps_payback off`, `fps_hold off` in `game.tsv`, combined with `DM_FPS=30`, `DM_FPS_TARGET=30`, `DM_DYNAMIC_RESOLUTION=1`, `DM_UPSCALER=metalfx`, `DM_THERMAL_CAP=0`, `DM_QOS_MAP=1`, `DM_QOS_EDGES=45,59` in `Documents/env.txt`.
   3. **Task Shader `first_gpu` (`+4`) Binding (`a9dc57b8`):** Binds `g_mtk.ind_rec + 4` (`first`) instead of `+0` (`count`) to `g_ot` at slot 29 (`DMSH_MESH_DRAW_SLOT`) when `ts != nil` on chain `39417042cfe8`, and tracks 8-byte `{count, first}` records in `mdx_run`, eliminating grass/foliage culling flicker during camera movement.
 
+## iOS 60 FPS Update (2026-11-10)
+
+- **Chained Upscaler (`agl_ndsr_vr` / `agl_ndsr_vr_light`) via MetalFX (`PR #1951` — `69f2c1cf`, `3666f414`):** `DM_GAME_UPSCALER_CHAIN_KEYS` lists the 37 compute shaders of `agl_ndsr_vr(_light).pck`. With `DM_UPSCALER=metalfx`, `up_chain_dispatch` skips the 3 packing stages and replaces the final neural upscaling pass with Apple's hardware `MTL4FXSpatialScaler` (~4.4 ms → ~0.5 ms GPU per frame).
+- **Compute Dispatch Overlap (`dispatch_overlap on` — `73acf68c`):** Back-to-back game compute dispatches with no `nvnCommandBufferBarrier` between them execute side-by-side without a blit barrier (~5.7 ms → ~2.6 ms for Kokiri Forest's 117 start-of-frame dispatches).
+- **8 GB Alias Region (`mem_alias 0x200000000`, `mem_reserve 0x468000000`):** Prevents `OptimizeChangeBanc` (`main+0xf7a0`) from running out of alias space at `+2.26 GB` and spinning a full CPU core at 100%.
+- **Fixed 720p Handheld Overlay (`romfs_overlay/Pack/Bootup.Nin_Ounce_NVN2.pack.zs`):** Generated via `scripts/oot_res_overlay.py ... 0.666667 - flat` (`1280×720` flat across all dynamic-resolution levels) and bundled inside `DmIOS.app/romfs_overlay`.
+- **Upstream Streaming & Uniform Fixes (`62670d62`, `33163971`, `1aa019a0`, `ee0c7ba0`):** `pool_peek` for pool walk statistics (PR #2085), lockless `ubc_wait` handoff (PR #2078), preserved shader-read marks across texture replacement (PR #2022), and stand-in colors for unwalked pool textures (PR #2075).
+
+

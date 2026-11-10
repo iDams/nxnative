@@ -13754,7 +13754,7 @@ static void dispatch(const p_dispatch *dp) {
     image_prepare(prog_get(S.cprog), 0x20);
     if (ndve_engine_dispatch(cs, dp)) return;   // nn::ndve's movie network as the host's kernels (DM_NDVE_ENGINE=1)
     if (up_mfx_wanted(cs) && !dp->ind && up_mfx_encode(cs)) return;   // the game's upscaler, drawn by MetalFX instead (DM_UPSCALER=metalfx)
-    if (DM_GAME_UPSCALER_CHAIN_N && !dp->ind && up_chain_dispatch(cs)) return;   // a dispatch of the game's chained upscaler that MetalFX drew or made unneeded
+    if (DM_GAME_UPSCALER_CHAIN_N != 0 && !dp->ind && up_chain_dispatch(cs)) return;   // a dispatch of the game's chained upscaler that MetalFX drew or made unneeded
     // Threadgroup memory past Metal's 32 KB, in a device buffer (dmsh_build.py tg_spill): a slice for every workgroup of the grid. An indirect dispatch's grid is in GPU memory, written earlier
     // in the frame: the replay waits for the GPU (as an indirect-count multi-draw does, mdi_wait) and reads it. Mario Kart World's spilled dispatches are all direct, of 1 to 3 workgroups
     uint64_t tg_groups = 0;
@@ -15461,7 +15461,7 @@ static int up_mfx_named(NvShader *cs) {
 static int up_chain_named(NvShader *cs);
 static int up_mfx_curves(const void *code, size_t n);
 static void up_mfx_read_color(NvShader *cs, const NVNshaderData *sd) {
-    if (!cs->up_color && DM_GAME_UPSCALER_CHAIN_N && up_mfx_on() && up_chain_named(cs)) {   // the chained upscaler: only whether the code has a colour curve (up_chain_dispatch)
+    if (!cs->up_color && DM_GAME_UPSCALER_CHAIN_N != 0 && up_mfx_on() && up_chain_named(cs)) {   // the chained upscaler: only whether the code has a colour curve (up_chain_dispatch)
         uint32_t nctl, ncode = 0; if (sd->control) nvn_ctl_lens(sd->control, &nctl, &ncode);
         cs->up_color = sd->data && ncode && ncode < (1u << 24) && !up_mfx_curves((const void *)(uintptr_t)sd->data, ncode) ? UP_COLOR_LINEAR : UP_COLOR_KEEP;
         return; }
