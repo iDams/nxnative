@@ -196,3 +196,14 @@ From an empty save: at about 45 s `A` (title), `A` (New Game), then the movie. F
 - [AV1 movies stop an M1 iPad with SIGILL in dav1d](../../../docs/reference/movies.md#av1-movies-stop-an-m1-ipad-with-sigill-in-dav1d): the title movie on an M1 iPad Pro.
 - [`devicectl` copies a large RomFS image through the Mac's memory](../../../docs/reference/packing.md#devicectl-copies-a-large-romfs-image-through-the-macs-memory): the 26.2 GB image's pushes to an iPad filled a 16 GB Mac's swap and failed; now sent over AFC.
 - [`devicectl`'s `--remove-existing-content` empties the app's whole container](../../../docs/reference/packing.md#devicectls---remove-existing-content-empties-the-apps-whole-container): the first complete copy of the image, deleted by the DLC step after it.
+
+## iOS Stable Baseline (iPhone 17 Pro Max — `v1.0-oot-30fps-stable`, 2026-11-09)
+
+- **Device:** iPhone 17 Pro Max (`iPhone18,2`, Apple A19 Pro GPU, 12 GB RAM, UDID `00008150-00190C880E3B401C`).
+- **Shader Library:** `b-39417042cfe8.img` (5.4 GB, 42,848 shaders, inputs `4bd48f723876`, pinned `DMSH_CHAIN="39417042cfe8"`).
+- **Measured Performance (Kokiri Forest):** **30.0 FPS locked** (`frame p50 33.33 ms`, `p95 33.91 ms`, 0–1 dropped frames per 300 frames, CPU power ~2.1 W, thermal state 0).
+- **Key Fixes Included in Baseline:**
+  1. **Pure Mesh Shader Pipeline & 8-Part Indirect Mesh Split (`f58c83ac`):** Uses `MTL4MeshRenderPipelineDescriptor` without dummy `entry_object` so all 131 task/mesh pipelines load from the archive (`0 prewarm failed`), and splits indirect mesh-only draws across 8 parts of up to 1,024 threadgroups (`MDX_MESH_PARTS = 8`, 192-byte `mdx_mask` record).
+  2. **30 FPS Frame Pacing & Thermal Stability (`5dc2c86a`, PR #1852):** `present_snap on`, `link_latency30 2`, `fps_payback off`, `fps_hold off` in `game.tsv`, combined with `DM_FPS=30`, `DM_FPS_TARGET=30`, `DM_DYNAMIC_RESOLUTION=1`, `DM_UPSCALER=metalfx`, `DM_THERMAL_CAP=0`, `DM_QOS_MAP=1`, `DM_QOS_EDGES=45,59` in `Documents/env.txt`.
+  3. **Task Shader `first_gpu` (`+4`) Binding (`a9dc57b8`):** Binds `g_mtk.ind_rec + 4` (`first`) instead of `+0` (`count`) to `g_ot` at slot 29 (`DMSH_MESH_DRAW_SLOT`) when `ts != nil` on chain `39417042cfe8`, and tracks 8-byte `{count, first}` records in `mdx_run`, eliminating grass/foliage culling flicker during camera movement.
+
