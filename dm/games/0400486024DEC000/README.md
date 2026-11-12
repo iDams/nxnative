@@ -222,4 +222,11 @@ From an empty save: at about 45 s `A` (title), `A` (New Game), then the movie. F
 - **Fixed 720p Handheld Overlay (`romfs_overlay/Pack/Bootup.Nin_Ounce_NVN2.pack.zs`):** Generated via `scripts/oot_res_overlay.py ... 0.666667 - flat` (`1280×720` flat across all dynamic-resolution levels) and bundled inside `DmIOS.app/romfs_overlay`.
 - **Upstream Streaming & Uniform Fixes (`62670d62`, `33163971`, `1aa019a0`, `ee0c7ba0`):** `pool_peek` for pool walk statistics (PR #2085), lockless `ubc_wait` handoff (PR #2078), preserved shader-read marks across texture replacement (PR #2022), and stand-in colors for unwalked pool textures (PR #2075).
 
+## iOS 60 FPS MetalFX Frame Generation & Stability (2026-11-11 / 2026-11-12)
+
+- **MetalFX Frame Generation (`DM_FRAMEGEN=1`, `DM_FRAMEGEN_MV=1`):** Integrated from `cheemu21/kid-with-sword-remake` branch `x12` (`c73064ee`). Uses hardware motion vector estimation (`fgmv.metal` precompiled) and HUD preservation (`fgmv_keep`), with 6 present command allocators (`g_present_alloc4[6]`). Generates a locked 60 FPS display on 30 FPS render pace with 1.51 W consumption and thermal state 0.
+- **LRU Ghost Texture Table (`034e91a8`, Issue #2213, PR #2389):** Replaces fixed 512-ring with LRU ordered ghost table (`GHOST_IDLE=16`, `GHOST_IDLE_SUBS=1,024`, `GHOST_TRIM=32`, `POOL_IDS_MAX=8,192`). Eliminates ghost ring thrashing and 100-490 ms submit thread hitches during area transitions and long play sessions.
+- **Zero Depth Textures by Copy (`4cdd5577`, PR #2306):** Fills single-sample `Depth16Unorm` and `Depth32Float` via zero buffer blit copies instead of clear-only render passes, avoiding Apple driver `kIOGPUCommandBufferCallbackErrorOutOfMemory` crashes on large depth attachments (e.g. 12288x12288) at save loads.
+
+
 

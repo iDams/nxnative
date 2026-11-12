@@ -2294,6 +2294,7 @@ static void post_complete(uint64_t fence, uint64_t c0, uint64_t c1) {
 static _Atomic int g_seg_inflight;   // main command buffers committed and not reported back yet (sub_cut)
 static void rt_preserve_bound(void);
 static void queue_program_preserve(void);
+static void own_ghost_trim(void);
 uint64_t mtl_sub_commit(void) {
     lc_land();   // clears still waiting (the command list ends with them)
     defer_fallback();   // Deferred merged pass: at the end of the submission there are still P draws not replayed (the normal path never gets here)
@@ -2303,6 +2304,7 @@ uint64_t mtl_sub_commit(void) {
     up_flush();
     gmem_commit_patch();
     g_cut_copy = 0;
+    own_ghost_trim();   // idle finalized textures past the ghost table's size go behind this submission's fence
     treg_finish_submission();   // Late descriptor views retire behind this submission's fence.
     rt_preserve_bound();   // The game may reuse completed command memory; queue bindings must not point into its texture snapshots.
     queue_program_preserve(); // Submitted metadata may retire while these programs remain bound.
@@ -2612,11 +2614,44 @@ static void serial_del(uint64_t k) { pthread_mutex_lock(&g_smu); id old = hm_get
 // Texture serials owned by a live NVN texture object (TextureInitialize until Finalize or re-initialization, hle_nvn.c). Command records and texture pool registrations snapshot the
 // texture object (tex_snap in hle_nvn.c, mtl_reg_tex), so replay can resolve a texture the game has already finalized: Breath of the Wild records each frame's transient render targets
 // (the HUD captures, the 640x360 half-resolution buffers) and finalizes their objects before it submits. Those serials went back into g_by_serial and stayed there for good, as no second
-// Finalize comes: about 10 a frame, 200,000 after an hour in the first shrine. A dead serial resolves through g_ghost instead, a small table whose oldest entry goes when a new one comes,
-// so a record replayed again soon still finds its texture
-enum { NGHOST = 16384 };
+// Finalize comes: about 10 a frame, 200,000 after an hour in the first shrine. A dead serial resolves through g_ghost instead, so a record replayed again soon still finds its texture.
+// Past NGHOST (512) entries the least recently used goes only once it is idle, unused for GHOST_IDLE (16) frames or GHOST_IDLE_SUBS (1,024) submissions (issue #2213, PR #2389)
+enum { NGHOST = 512, GHOST_IDLE = 16, GHOST_IDLE_SUBS = 1024, GHOST_TRIM = 32 };
+typedef struct ghost_use { uint64_t serial, frame, sub; struct ghost_use *prev, *next; } ghost_use;
+static ghost_use *g_ghost_lru, *g_ghost_mru;   // least to most recently used
+static nvn_hmap g_ghost_use = {.klen = 8};
 static nvn_hmap g_tex_live = {.klen = 8};   // serial → the texture object it was initialized in (mtl_tex_release), under g_smu
-static nvn_hmap g_ghost = {.klen = 8}; static uint64_t g_ghost_ring[NGHOST]; static unsigned g_ghost_next; static uint64_t g_ghost_puts;
+static nvn_hmap g_ghost = {.klen = 8}; static uint64_t g_ghost_puts;
+static void obj_drop(id o) { if (alias_has(o)) defer_obj_unref(o); else defer_obj_release(o); }   // caller holds g_smu
+static void use_unlink(ghost_use *u) {
+    if (u->prev) u->prev->next = u->next; else g_ghost_lru = u->next;
+    if (u->next) u->next->prev = u->prev; else g_ghost_mru = u->prev;
+    u->prev = u->next = NULL;
+}
+static void ghost_used(uint64_t k) {   // k's record moved to the end of the list with the current frame and submission
+    ghost_use *u = nvn_hm_get(&g_ghost_use, &k);
+    if (!u) {
+        u = calloc(1, sizeof *u); if (!u) MDIE("ghost use record");
+        u->serial = k; nvn_hm_put(&g_ghost_use, &k, u);
+    } else if (u != g_ghost_mru) use_unlink(u);
+    u->frame = atomic_load(&g_cur_frame); u->sub = g_fence + 1;
+    if (u != g_ghost_mru) { u->prev = g_ghost_mru; if (g_ghost_mru) g_ghost_mru->next = u; else g_ghost_lru = u; g_ghost_mru = u; }
+}
+static void ghost_del_locked(uint64_t k) {   // k's ghost entry goes with its place in the list; the serial resolves anew (a note)
+    ghost_use *u = nvn_hm_del(&g_ghost_use, &k); if (u) { use_unlink(u); free(u); }
+    id old = hm_get_id(&g_ghost, &k); if (!old) return;
+    ghost_held_add((__bridge void *)old, -1); obj_drop(old); hm_del_id(&g_ghost, &k); ser_note(k);
+}
+// Idle entries past NGHOST go, least recently used first, at most `budget` of them; the first entry in use ends the walk (every one after it was used later)
+static void ghost_trim(unsigned budget) {
+    uint64_t frame = atomic_load(&g_cur_frame), sub = g_fence + 1;
+    for (; budget && g_ghost.n > NGHOST && g_ghost_lru; budget--) {
+        const ghost_use *u = g_ghost_lru;
+        if (frame - u->frame < GHOST_IDLE && sub - u->sub < GHOST_IDLE_SUBS) break;
+        ghost_del_locked(u->serial);
+    }
+}
+static void own_ghost_trim(void) { pthread_mutex_lock(&g_smu); ghost_trim(GHOST_TRIM); pthread_mutex_unlock(&g_smu); }
 void mtl_tex_init(const tex_t *t) {
     if (!t->serial) return;
     tex_t *desc = image_shape(t) ? malloc(sizeof *desc) : NULL; if (desc) *desc = *t;
@@ -2625,7 +2660,6 @@ void mtl_tex_init(const tex_t *t) {
     if (desc) free(nvn_hm_put(&g_image_desc, &t->serial, desc));
     pthread_mutex_unlock(&g_smu);
 }
-static void obj_drop(id o) { if (alias_has(o)) defer_obj_unref(o); else defer_obj_release(o); }   // caller holds g_smu
 static void tex_pin_set(tex_pin *pin,id object) { // g_smu held
     id old=(__bridge id)pin->object; if(old==object) return;
     if(old) {
@@ -2644,7 +2678,7 @@ void mtl_tex_pin(uint64_t serial) {
     tex_pin *pin=nvn_hm_get(&g_tex_pins,&serial);
     if(!pin) { pin=calloc(1,sizeof *pin); if(!pin) MDIE("texture retention allocation failed"); nvn_hm_put(&g_tex_pins,&serial,pin); }
     pin->refs++;
-    if(!pin->object) { id o=hm_get_id(&g_by_serial,&serial); if(!o) o=hm_get_id(&g_ghost,&serial); tex_pin_set(pin,o); }
+    if(!pin->object) { id o=hm_get_id(&g_by_serial,&serial); if(!o && (o=hm_get_id(&g_ghost,&serial))) ghost_used(serial); tex_pin_set(pin,o); }
     pthread_mutex_unlock(&g_smu);
 }
 void mtl_tex_unpin(uint64_t serial) {
@@ -2653,7 +2687,7 @@ void mtl_tex_unpin(uint64_t serial) {
     pthread_mutex_unlock(&g_smu);
 }
 static __unsafe_unretained id tex_get(uint64_t k) {
-    pthread_mutex_lock(&g_smu); __unsafe_unretained id o = hm_get_id(&g_by_serial, &k); if (!o && g_ghost.n) o = hm_get_id(&g_ghost, &k); if(!o) { tex_pin *pin=nvn_hm_get(&g_tex_pins,&k); if(pin) o=(__bridge id)pin->object; } pthread_mutex_unlock(&g_smu); return o;
+    pthread_mutex_lock(&g_smu); __unsafe_unretained id o = hm_get_id(&g_by_serial, &k); if (!o && g_ghost.n && (o = hm_get_id(&g_ghost, &k))) ghost_used(k); if(!o) { tex_pin *pin=nvn_hm_get(&g_tex_pins,&k); if(pin) o=(__bridge id)pin->object; } pthread_mutex_unlock(&g_smu); return o;
 }
 static void tex_put(uint64_t k, id o) {   // serials from 2^62 up are external textures (mtl_ext_tex), never initialized by the game
     pthread_mutex_lock(&g_smu);
@@ -2661,13 +2695,10 @@ static void tex_put(uint64_t k, id o) {   // serials from 2^62 up are external t
     id old = hm_get_id(m, &k);
     if (old) count_add(m == &g_by_serial ? &g_by_serial_held : &g_ghost_held, (__bridge void *)old, -1);
     if (old) obj_drop(old);
-    else if (m == &g_ghost) {
-        uint64_t *slot = &g_ghost_ring[g_ghost_next++ % NGHOST];
-        if (*slot) { id ev = hm_get_id(&g_ghost, slot); if (ev) { ghost_held_add((__bridge void *)ev, -1); obj_drop(ev); } hm_del_id(&g_ghost, slot); ser_note(*slot); }   // the evicted serial resolves anew too
-        *slot = k; g_ghost_puts++;
-    }
-    hm_put_id(m, &k, o); tex_pin *pin=nvn_hm_get(&g_tex_pins,&k); if(pin) tex_pin_set(pin,o); ser_note(k);
+    else if (m == &g_ghost) g_ghost_puts++;
+    hm_put_id(m, &k, o); tex_pin *pin = nvn_hm_get(&g_tex_pins, &k); if (pin) tex_pin_set(pin, o); ser_note(k);
     count_add(m == &g_by_serial ? &g_by_serial_held : &g_ghost_held, (__bridge void *)o, 1);
+    if (m == &g_ghost) { ghost_used(k); ghost_trim(2); }   // two per put: idle entries drain faster than new ones come
     pthread_mutex_unlock(&g_smu);
 }
 // Host record of a packaged texture: the current MTLTexture, the upload stamp, and the global write generation at the last check
@@ -3713,6 +3744,24 @@ static void tex_zero_fill(id<MTLTexture> mt) {
     MTLPixelFormat pf = mt.pixelFormat;
     int depth = pf == MTLPixelFormatDepth16Unorm || pf == MTLPixelFormatDepth32Float || pf == MTLPixelFormatDepth32Float_Stencil8;
     int stencil = pf == MTLPixelFormatStencil8 || pf == MTLPixelFormatDepth32Float_Stencil8;
+    int multisample = tt == MTLTextureType2DMultisample || tt == MTLTextureType2DMultisampleArray;
+    size_t dbpp = multisample ? 0 : pf == MTLPixelFormatDepth16Unorm ? 2 : pf == MTLPixelFormatDepth32Float ? 4 : 0;
+    if (dbpp) {   // by copies, in pieces of rows: a row is at most 64 KB (16384 x 4), the zero buffer at least 4 MB, so it is never grown for a depth texture
+        id<MTLBuffer> zb = zero_buf((size_t)mt.width * dbpp); if (!zb) return;
+        NSUInteger slices = mt.arrayLength * (tt == MTLTextureTypeCube || tt == MTLTextureTypeCubeArray ? 6 : 1);
+        up_begin();
+        for (NSUInteger l = 0; l < mt.mipmapLevelCount; l++) {
+            NSUInteger w = MAX(mt.width >> l, 1u), h = MAX(mt.height >> l, 1u), step = MAX((NSUInteger)1, MIN(h, zb.length / (w * dbpp)));
+            for (NSUInteger y = 0; y < slices; y++) for (NSUInteger y0 = 0; y0 < h; y0 += step) {
+                NSUInteger n = MIN(step, h - y0);
+                up_blit_add_at(zb, 0, w * dbpp, w * dbpp * n, MTLSizeMake(w, n, 1), mt, y, l, MTLOriginMake(0, y0, 0));
+            }
+        }
+        [g_up_texs addObject:mt];
+        if (!g_cb) up_flush();
+        if (!g_tex_zeroed++) MLOG("new-texture zeroing: on (new Metal textures are undefined; new Switch memory reads 0)");
+        return;
+    }
     if (depth || stencil) {
         up_begin();
         if (g_up_ce) { m4_end(g_up_ce); g_up_ce = nil; }
@@ -4371,7 +4420,18 @@ static id<MTLTexture> tex_mtl_(const tex_t *ct) {
     if (stale) {
         // An sRGB / linear view whose parent left the sharing table (upgraded, taken over or evicted) no longer shares the storage's bytes: dropped, and made again below on what holds them now
         static int nstale; if (nstale++ < 4) MLOG("stale sRGB / linear view dropped ser=%llu format %lu (%d so far)", (unsigned long long)t->serial, (unsigned long)((id<MTLTexture>)have).pixelFormat, nstale);
-        serial_del(t->serial); have = nil;
+        pthread_mutex_lock(&g_smu);
+        id live = hm_get_id(&g_by_serial, &t->serial);
+        if (live == have) {
+            held_add((__bridge void *)live, -1);
+            obj_drop(live);
+            hm_del_id(&g_by_serial, &t->serial);
+            ser_note(t->serial);
+        } else if (!live && hm_get_id(&g_ghost, &t->serial) == have) {
+            ghost_del_locked(t->serial);
+        }
+        pthread_mutex_unlock(&g_smu);
+        have = nil;
     }
     if (have) { if (t->pool && nvn_sparse_pool(t->pool)) sparse_gpu_look(t, have); return have; }
     if (t->d.target == 10) {   // Buffer texture (TARGET_BUFFER): create the texture-buffer view directly on the memory pool buffer (zero copy; the GPU reads the pool's current content at execution time, same as NVN semantics)
@@ -9899,7 +9959,7 @@ static uint64_t pool_gpu(int samp, int dtt, int dpf, int base, __unsafe_unretain
             os_unfair_lock_lock(&g_snote_lk);
             for (uint64_t g = p->ser + 1; g <= sg && known; g++) {
                 const ser_lnote *sn = &g_ser_log[g % SER_LOG]; known = sn->gen == g;
-                if (known) for (int k = (int)(uintptr_t)nvn_hm_get(&g_treg_serial, &sn->serial); k && nid < 8192; k = g_treg[k - 1].next) POOL_ID(k - 1);
+                if (known) for (int k = (int)(uintptr_t)nvn_hm_get(&g_treg_serial, &sn->serial); k && nid < POOL_IDS_MAX; k = g_treg[k - 1].next) POOL_ID(k - 1);
             }
             os_unfair_lock_unlock(&g_snote_lk);
         }
@@ -9913,7 +9973,7 @@ static uint64_t pool_gpu(int samp, int dtt, int dpf, int base, __unsafe_unretain
         }
         #undef POOL_ID
         if (!known) { g_stat_pool_nopatch[3]++; break; }
-        if (nid >= 8192) { g_stat_pool_nopatch[0]++; break; }
+        if (nid >= POOL_IDS_MAX) { g_stat_pool_nopatch[0]++; break; }
         uint64_t *e = (uint64_t *)((uint8_t *)p->buf.contents + DMSH_POOL_HEAD), dummy = e[nn], room = samp ? UINT64_MAX : pool_room(), spent = g_walk_spent;
         int gone = 0, left = 0, left_req = 0; id<MTLBuffer> b = nil; uint64_t *be = NULL;
         pool_ids nd = {0}, nt = {0}; ids_begin(0); ids_begin(1);

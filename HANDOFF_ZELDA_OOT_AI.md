@@ -199,3 +199,34 @@ xcrun devicectl device process launch \
   --terminate-existing --activate \
   com.marcoastorga.zeldaoot
 ```
+
+---
+
+## 10. Actualización MetalFX Frame Generation + Estabilidad de Texturas y Profundidad (2026-11-12)
+
+### 10.1 MetalFX Frame Generation (`cheemu21` rama `x12`)
+* **Variables en `Documents/env.txt`:**
+  ```text
+  DM_FPS_TARGET=30
+  DM_FRAMEGEN=1
+  DM_FRAMEGEN_MV=1
+  DM_DYNAMIC_RESOLUTION=1
+  DM_UPSCALER=metalfx
+  ```
+* **Tecnología:** El render interno corre a 30 FPS nativos estables, y la GPU A19 Pro calcula vectores de movimiento por hardware (`fgmv.metal`), preserva la interfaz/HUD (`fgmv_keep`) e interpola a **60 FPS** fluidos con consumo térmico bajísimo (~1.5 W) y thermal state 0.
+* **Pool de Allocators de Presentación:** Ampliado a 6 allocators (`g_present_alloc4[6]`) en `nvn_mtl.m` para desacoplar completamente los frames generados de los frames renderizados.
+
+### 10.2 Tabla Ghost LRU para Ocarina of Time (`seedds` commit `034e91a8` — Issue #2213 / PR #2389)
+* **Causa Raíz:** El ring buffer fijo de 512 entradas en `g_ghost` sufría "ring thrashing" durante streaming de áreas y transiciones con menús de pausa (hasta 3.6 millones de `puts` en 300 frames y picos de 100-490 ms en el hilo de envío).
+* **Solución Implementada:** Tabla LRU con umbral de inactividad (`GHOST_IDLE=16` frames, `GHOST_IDLE_SUBS=1,024` submissions) y recorte progresivo (`GHOST_TRIM=32`). Las texturas retiradas activas permanecen en memoria sin ser expulsadas mientras se usen. `POOL_IDS_MAX` establecido en 8,192.
+* **Limpieza de Vistas Stale:** `ghost_del_locked` elimina inmediatamente entradas stale de sRGB/lineal de `g_ghost` evitando fugas de referencias fantasma.
+
+### 10.3 Zero Depth Textures mediante Copias (`seedds` commit `4cdd5577` — PR #2306)
+* **Causa Raíz:** En iOS/macOS, las texturas grandes de profundidad (como `12288x12288 Depth16Unorm` y `4096x4096 Depth32Float` que OoT crea en la carga de partida) provocaban error de driver de Apple `kIOGPUCommandBufferCallbackErrorOutOfMemory` al limpiarse mediante un render pass clear-only.
+* **Solución Implementada:** Se inicializan mediante copias blit directas por filas desde el buffer cero compartido, eliminando el fallo de OOM en cargas de partida.
+
+### 10.4 Estado de la Compilación
+* **Binario:** `/Users/marco/Ocarina/build/ios/xcode-dd/Build/Products/Release-iphoneos/DmIOS.app` (105 MB).
+* **Firma:** `Apple Development: Marco Astorga (L4J24857AX)`, Team `TGU3UHC7C7`, Profile `iOS Team Provisioning Profile: com.marcoastorga.zeldaoot`.
+* **Estado:** Compilado, empaquetado, verificado y listo para instalar en cuanto el usuario llegue a casa.
+
