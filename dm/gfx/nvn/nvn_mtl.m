@@ -894,7 +894,6 @@ static void big_moved(int i) {   // caller holds g_mu: entry i has a new index
         return; }
 }
 static void rel_pool_gone(const void *mem);
-static int sub_open(void);
 // Upload windows (upw_get): zero-copy buffers over UPW_S-aligned stretches of a pool that texture uploads read from, kept in the residency set while they are among the UPW_N used
 // last. They take the place of a buffer per upload over just the texture's pages (up_big_src), which went into the residency set and out again at the batch's end. At most
 // UPW_N x UPW_S (128 MB) is wired for them. A pool's windows go with it (mtl_pool_del); one evicted for a newer stretch is retired with the open upload batch. Under g_mu.
@@ -902,7 +901,8 @@ static int sub_open(void);
 enum { UPW_N = 8, UPW_S = 16u << 20 };
 static struct { const void *mem; uintptr_t lo, hi; uint64_t used; } g_upw[UPW_N]; static __strong id<MTLBuffer> g_upw_buf[UPW_N]; static uint64_t g_upw_tick, g_upw_hits, g_upw_made;
 static void upw_drop_pool(const void *mem) {   // caller holds g_mu
-    for (int i = 0; i < UPW_N; i++) if (g_upw_buf[i] && g_upw[i].mem == mem) { defer_obj_at(g_upw_buf[i], 0, g_fence + sub_open()); g_upw_buf[i] = nil; g_upw[i].mem = NULL; }
+    uint64_t f = g_fence + (atomic_load(&g_sub_on) ? 1 : 0);
+    for (int i = 0; i < UPW_N; i++) if (g_upw_buf[i] && g_upw[i].mem == mem) { defer_obj_at(g_upw_buf[i], 0, f); g_upw_buf[i] = nil; g_upw[i].mem = NULL; }
 }
 void mtl_pool_del(const void *mem) {
     reg_bump(-1, REG_POOL);
@@ -1949,15 +1949,6 @@ static int um_hits(uint64_t lo, uint64_t hi) {
     return 0;
 }
 // The remembered bytes of running submissions over a copy of memory (d holds [lo, hi); ready: the copy operations filling it, which must come first). Not left to the copy worker: the next commit changes these bytes
-// Whether um_overlay lays a remembered byte over [lo, hi): ubp_get then copies that shadow here, since the overlay waits for its copy (queued and waited for at once, on every such shadow)
-static int um_hits(uint64_t lo, uint64_t hi) {
-    if (!g_um) return 0;
-    uint64_t done = g_done;
-    for (uint64_t at = lo, end; at < hi; at = end) { uint64_t pg = at >> 12; end = MIN((pg + 1) << 12, hi); const um_ent *m = &g_um[um_slot(pg)];
-        if (m->page != pg || m->fence <= done) continue;
-        for (uint64_t x = at; x < end; x++) if (m->f[x & 4095] > done) return 1; }
-    return 0;
-}
 static void um_overlay(uint64_t lo, uint64_t hi, uint8_t *d, uint64_t ready) {
     if (!g_um) return;
     uint64_t done = g_done; int waited = 0;
