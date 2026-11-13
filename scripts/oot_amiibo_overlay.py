@@ -6,20 +6,47 @@
 # The game's file decides which amiibo count (decoded with MurmurHash3 against the game's own names): NumberingID_1277 and _1279 (one mask each, no daily limit), SeriesID AmiiboSeriesID09
 # (the Legend of Zelda amiibo series) and CharacterBaseID Link, Zelda and Ganon (any series): 3-5 random drops, once a day each.
 # The game's files are read from your own dump; nothing of the game is in this repository.
-import sys, os, struct, zlib
+import sys, os, shutil, struct, subprocess, zlib
 PATH = 'Game/AmiiboSetting/AmiiboSetting.game__ui__AmiiboSetting.bgyml'
 RSTB = 'System/Resource/ResourceSizeTable.Product.111.Nin_Ounce_NVN2.rsizetable.zs'
+
+def _zdec(z):
+    try:
+        import zstandard
+        return zstandard.ZstdDecompressor().decompress(z, max_output_size=1 << 28)
+    except ImportError:
+        pass
+    try:
+        from compression import zstd
+        return zstd.decompress(z)
+    except ImportError:
+        pass
+    zstd_bin = shutil.which('zstd') or '/opt/homebrew/bin/zstd'
+    return subprocess.run([zstd_bin, '-d', '-c'], input=z, capture_output=True, check=True).stdout
+
+def _zcmp(raw, level=19):
+    try:
+        import zstandard
+        return zstandard.ZstdCompressor(level=level).compress(raw)
+    except ImportError:
+        pass
+    try:
+        from compression import zstd
+        return zstd.compress(raw, level=level)
+    except ImportError:
+        pass
+    zstd_bin = shutil.which('zstd') or '/opt/homebrew/bin/zstd'
+    return subprocess.run([zstd_bin, f'-{level}', '-c'], input=raw, capture_output=True, check=True).stdout
 
 def rstb_raise(z, factor=2):
     # the resource size table (REST: CRC32 of the path → bytes the game reserves for loading the file) with this file's entry raised: the game's heap for the file
     # comes from it, and a 2,448-byte rewrite of the 1,476-byte file ran it out (a null allocation at main+0xe156e4, crash at 5 s). Returns the new .zs bytes.
-    import zstandard
-    d = bytearray(zstandard.ZstdDecompressor().decompress(z, max_output_size=1 << 28)); assert d[:4] == b'REST', 'not a resource size table'
+    d = bytearray(_zdec(z)); assert d[:4] == b'REST', 'not a resource size table'
     key = struct.pack('<I', zlib.crc32(PATH.encode())); i = d.find(key)
     assert i > 0 and d.find(key, i + 1) == -1, 'the size table has no single entry for ' + PATH
     old = struct.unpack_from('<I', d, i + 4)[0]; assert 1024 < old < 1 << 20, 'implausible size table entry %d' % old
     struct.pack_into('<I', d, i + 4, old * factor)
-    return zstandard.ZstdCompressor(level=19).compress(bytes(d)), old, old * factor
+    return _zcmp(bytes(d), 19), old, old * factor
 
 # ---- BYML v7 (little endian), the node types this file uses: dict C1, array C0, string A0, bool D0, int D1, float D2, uint D3 ----
 class T:   # a typed scalar, so a round trip keeps each value's node type

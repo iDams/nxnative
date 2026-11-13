@@ -101,3 +101,16 @@ if [ -n "$DM_RESOURCE_PSO" ]; then
 else
     rm -rf "$APP/pso"
 fi
+# Game-specific RomFS overlays (amiibo card list + amiibo-nolimit when enabled in game.tsv)
+GD="$resource_dm/games/${DM_RESOURCE_TITLE:-}"
+if [ -n "${DM_RESOURCE_TITLE:-}" ] && [ -f "$GD/amiibo.tsv" ]; then
+    mkdir -p "$APP/romfs_overlay"
+    cp "$GD/amiibo.tsv" "$APP/romfs_overlay/amiibo.tsv"
+    if [ -z "$DM_RESOURCE_PROGRAMS" ] && [ -f "${DM_RESOURCE_ROMFS:-}" ] && [ -f "$GD/game.tsv" ] && grep -Eq '^amiibo_overlay[[:space:]]+on' "$GD/game.tsv"; then
+        DMT="$resource_dm/tools" python3 "$resource_dm/../scripts/oot_amiibo_overlay.py" "$DM_RESOURCE_ROMFS" "$APP/romfs_overlay" || die "amiibo overlay"
+    else
+        rm -rf "$APP/romfs_overlay/amiibo-nolimit"
+    fi
+else
+    rm -rf "$APP/romfs_overlay"
+fi
