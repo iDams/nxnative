@@ -230,3 +230,32 @@ xcrun devicectl device process launch \
 * **Firma:** `Apple Development: Marco Astorga (L4J24857AX)`, Team `TGU3UHC7C7`, Profile `iOS Team Provisioning Profile: com.marcoastorga.zeldaoot`.
 * **Estado:** Compilado, empaquetado, verificado y listo para instalar en cuanto el usuario llegue a casa.
 
+---
+
+## 11. Actualización Amiibo + Estabilidad `seedds/main` + `DM_NDVE_LITE` (`ff7`) (2026-11-13)
+
+### 11.1 Soporte Completo de Amiibo (`cbb84973`–`b6c31f8c`, `3f7210ef`)
+* **Emulación Virtual `nn::nfp` / `nn::nfc` (`dm/host/amiibo.h`, `hle_sdk16.c`, `hle_mii.c`):** Simula etiquetas NTAG215 desde `DM_AMIIBO` (`Documents/amiibo.txt` en iOS) y persiste áreas de aplicación (`application_area`) por ID en `Documents/amiibo/<ID>.area`.
+* **Selector en Menú del Juego (`GameMenu.swift`, `dm/games/0400486024DEC000/amiibo.tsv`):** Añade el submenú **Amiibo** en el menú de pausa/botón superior con 35 entradas (incluyendo `Young Link - Ocarina of Time (mask)` y `Young Zelda - Ocarina of Time (mask)` más todos los drops de Zelda/Smash) y botón `None`.
+* **Overlay sin límite diario (`amiibo_overlay on`, `scripts/oot_amiibo_overlay.py`, `dm/ios/tools/stage_resources.sh`):** Genera automáticamente `DmIOS.app/romfs_overlay/amiibo-nolimit/` desde `/Users/marco/Ocarina/extract/v131072/RomFS.img`, desactiva `EnableDailyLimit` en `Game/AmiiboSetting/AmiiboSetting.game__ui__AmiiboSetting.bgyml` (`1508` bytes) y duplica su entrada REST en `ResourceSizeTable.Product.111.Nin_Ounce_NVN2.rsizetable.zs` (`11672 → 23344`). `hle_fs.c` (`rom_overlay_expand`) prioriza `amiibo-nolimit/`.
+* **Escáner CoreNFC (`dm/ios/Sources/AmiiboScan.swift`, `Info.plist`):** Añade `"Scan an amiibo"` y `NFCReaderUsageDescription`.
+  * **Nota de firma (Personal Team):** El perfil automático `iOS Team Provisioning Profile: com.marcoastorga.zeldaoot` (`TGU3UHC7C7`) no incluye el entitlement `com.apple.developer.nfc.readersession.formats` (`TAG`), por lo que `DmIOS.app` se compiló sin ese entitlement para mantener la firma válida. En esta instalación, `"Scan an amiibo"` detecta de forma segura la ausencia del permiso y muestra `"Not available in this install"` en lugar de cerrarse. Se pueden usar figuras físicas mediante una automatización NFC de la app **Atajos (Shortcuts)** que escriba el ID de 16 dígitos hex en `Documents/amiibo.txt`, o usar directamente la lista virtual integrada en el menú.
+
+### 11.2 Optimizaciones de GPU/CPU, Deadlines RT y Películas Ligeras
+* **Motor gráfico y NVN (`seedds/main`):**
+  * `pool_skip_retired on` (`3360b204`): Evita reconstruir texturas ya finalizadas en tablas de pool tras cambios de escena.
+  * `ALLOC_SHARE=64`, `POST_RING` y `VIS_RING=SUB_FLIGHT_MAX` (`5d1502f3`, `7602ff26`, `49573eae`): Allocators compartidos por frame y anillo de visibilidad para envíos frecuentes sin bloquear `nvnSyncWait`.
+  * `gw_commit` iterando solo páginas anotadas (`b166ba08`), media móvil en `nvn_fstep_next` (`27b7995a`), barreras blit `mfx_order` en MetalFX (`16405b41`, `421873d7`, `3b3c8979`) y notas dispersas `treg_sparse_notes` (`36197a1b`).
+  * Declaración de deadlines RT (`nvn_rt.h`, `e4e8816d`, `41b3e8ef`) en hilos `replay`, `encode` y `acquire` para evitar ejecución en efficiency cores a 30 FPS.
+* **Ruta ligera de vídeo (`DM_NDVE_LITE`, `cheemu/ff` `ff7` → `931f6764`):** Por defecto evita ejecutar la red neuronal de `nn::ndve` en las películas de título/introducción (`pic_copy` + `resample_lite` en `ndve_engine.metal`), eliminando la caída por debajo de 60 FPS durante el título (`DM_NDVE_LITE=0` restaura la red completa).
+* **Cadena fija:** `DMSH_CHAIN="39417042cfe8"` intacta, binarios `/Users/marco/Ocarina/patched_37f` intactos y FrameGen actual X14 (`fgmv.metal`) preservado.
+
+### 11.3 Pruebas Verificadas y Estado Actual (`ff47e0378817`)
+* **Shaders iOS (`make -C dm/host GAME=0400486024DEC000 MSL_SDK=iphoneos host_msl game_profile`):** 15 librerías Metal compiladas limpiamente (`host_msl_gen.h`).
+* **Pruebas unitarias (`dm/host/tests` + `dm/gfx/tests` + `test_ndve_engine.py`):**
+  * `test_ndve_engine.py`: 4 tests `OK`.
+  * `t_amiibo`: `ok`; `t_nfc`: 95/95 checks passed.
+  * `t_pool_retired` (11), `t_sbw` (38), `t_sparse_pool_cache` (26), `t_thread_rt` (8), `t_rt_comp` (745/245/245), `t_wait_event` (100/100), `t_dlss_mfx` (18/18/18), `t_fstep` (80), `t_present_crop` (117×4): **0 fallos**.
+* **Build iOS:** `/Users/marco/Ocarina/build/ios/xcode-dd/Build/Products/Release-iphoneos/DmIOS.app` (`5.5G`, firmado para `com.marcoastorga.zeldaoot`, `DMCommit=ff47e0378817`, `DMChain=39417042cfe8`), con `romfs_overlay/amiibo.tsv` y `amiibo-nolimit/` integrados y `DM_COPY_ROMFS=NO`. Espacio libre en disco: `114 Gi`.
+* **Pendiente en casa:** El iPhone `00008150-00190C880E3B401C` figura como `unavailable` ahora mismo. Al conectarlo, instalar encima con `xcrun devicectl device install app` sin borrar la app para conservar `Documents/RomFS.img` y `Documents/save`.
+
