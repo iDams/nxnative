@@ -125,6 +125,10 @@ An update's folder alone will do (no `base/`), and so will `exefs/` and `romfs/`
 
 Questions, how a game runs on your Mac or iPhone, and ideas go in [Discussions](https://github.com/seedds/nxnative/discussions); [Issues](https://github.com/seedds/nxnative/issues) are for bugs, with the log. Ocarina of Time's performance (frame rate, resolution, which Macs hold 60 fps) is followed in [Ocarina of Time: state on main](https://github.com/seedds/nxnative/discussions/1789).
 
+## Proyecto futuro (PC / referencia de mods OoT)
+
+- **[`Shakoquo/Mako`](https://github.com/Shakoquo/Mako)** (clonado en `/Users/marco/Mako`, rama `amd-fix-sharkiix-version`, tag `mako-4.0` / `a5ae5ae9`): fork de `NotRexed/Hookshot` que recompila estáticamente *Ocarina of Time* Switch 2 (`0400486024DEC000`, `v131072`) de ARM64 a C para PC (Windows/Linux x86-64, Vulkan 1.3 + mesh shaders). No corre en Mac/iOS ni tiene Amiibo, pero queda guardado para uso en PC y como referencia futura de sus parches/offsets (`nx2/oot_patches.py`) y su mod **Master Quest** (`nx2/mq_banc.py`, `host/master_quest.c`). Ver detalle en [`HANDOFF_ZELDA_OOT_AI.md`](HANDOFF_ZELDA_OOT_AI.md).
+
 ## For developers
 
 [How it works](docs/development.md) · [Game notes](dm/games/README.md#games) · [Bring-up and debugging](docs/agents/README.md) · [Front ends](docs/frontends.md) · [Contributing](CONTRIBUTING.md)

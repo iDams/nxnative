@@ -259,3 +259,24 @@ xcrun devicectl device process launch \
 * **Build iOS:** `/Users/marco/Ocarina/build/ios/xcode-dd/Build/Products/Release-iphoneos/DmIOS.app` (`5.5G`, firmado para `com.marcoastorga.zeldaoot`, `DMCommit=ff47e0378817`, `DMChain=39417042cfe8`), con `romfs_overlay/amiibo.tsv` y `amiibo-nolimit/` integrados y `DM_COPY_ROMFS=NO`. Espacio libre en disco: `114 Gi`.
 * **Pendiente en casa:** El iPhone `00008150-00190C880E3B401C` figura como `unavailable` ahora mismo. Al conectarlo, instalar encima con `xcrun devicectl device install app` sin borrar la app para conservar `Documents/RomFS.img` y `Documents/save`.
 
+---
+
+## 12. Novedades `seedds/main` (PR #2367, Hilos, FS) + Proyecto Futuro `Shakoquo/Mako` (2026-11-13)
+
+### 12.1 Parches aplicados desde `seedds/main` (Mac / iOS, cadena fija `39417042cfe8`)
+* **PR #2367 (`f23056a8` ← `5b0f1372`, `dm/gfx/nvn/nvn_fstep.h`):** Al bajar de un hold más largo (20 o 30 fps tras cargar un área en OoT), `nvn_fstep_next` ahora evalúa también la media móvil (`ccur`) frente a `FSTEP_FIT * (k - 1)`, evitando quedar atascado ~24 s en 20/30 fps por cuadros aislados sobre el umbral.
+* **Seguridad de hilos (`dm/host/hle_thread.c` — `8d8023b1`, `3d7d39f6`, `8ebf615a`):** Bloqueo `G` en `GetThreadId`/`GetThreadCoreMask`/`SetThreadCoreMask` (evita UAF al cerrar), espera correcta en pausa hasta retorno del manejador y liberación limpia al cerrar hilos no iniciados.
+* **FS y Empaquetado (`f07b3c1c`, `2b9d89f3`):** Limpieza de rollback en `dm/host/hle_fs.c` y rechazo recursivo en `scripts/pack_nup.py`.
+* **Excluidos intencionalmente:** `a4b59097` y `ad8bca6c` (cambian `DMSH_CHAIN` respecto a `39417042cfe8`), `892aaf83` (solo Vulkan/PC), `2c3fcae5` (`PR #2114`, transform feedback de otros juegos con conflictos en `nvn_mtl.m`) y `32faef7c`/`0d103787` (diagnóstico / refactor de segmentos dependiente de commits previos no presentes en esta rama).
+* **Nota sobre `cheemu/ff` (`173eb379` `FF7`):** Además de `DM_NDVE_LITE` (ya integrado), `FF7` introduce `DM_WIDE_VIEW` (parches ARM64 en `patches.py`), pero requiere regenerar `patched_37f` y revierte FrameGen a `FF3`. Se mantiene nuestra base con `X14` + `DM_NDVE_LITE` + `Amiibo` sin tocar `patched_37f`.
+
+### 12.2 Proyecto futuro guardado: `Shakoquo/Mako` (`/Users/marco/Mako`)
+* **Repositorio:** `https://github.com/Shakoquo/Mako` clonado en `/Users/marco/Mako` (rama `amd-fix-sharkiix-version`, tag `mako-4.0`, commit `a5ae5ae9`, 67 MB).
+* **Qué es:** Fork de `NotRexed/Hookshot` que recompila estáticamente *Ocarina of Time* Switch 2 (`0400486024DEC000`, `v131072`, build `e0f3ccfa`) de ARM64 a C para **PC (Windows x64 / Linux `x86-64-v3`)** sobre **Vulkan 1.3 + mesh shaders** (con FSR 4 / Redstone, 45,914 pipelines precompilados, *Test my PC* y `steady_fps`). **No** compila para iOS/Mac ni incluye soporte Amiibo.
+* **Qué aprovechar a futuro:**
+  1. **Mako Master Quest** (`nx2/mq_banc.py`, `host/master_quest.c`): remixes RomFS de Deku Tree, Dodongo's Cavern y Jabu-Jabu (hasta que Link despierta adulto), precios RSDB y multiplicador de daño configurable.
+  2. **Offsets documentados de `v131072`** (`nx2/oot_patches.py`, `oot_wide.py`, `oot_occlusion.py`, `oot_native_resolution.py`): velocidad de texto, cámara sin auto-centrado, desbloqueo >60 fps y escala 3D al 100%.
+
+### 12.3 Compilación e instalación en iPhone Dams (`00008150-00190C880E3B401C`)
+* Compilado e instalado encima de la app existente (`DM_COPY_ROMFS=NO`) conservando `Documents/RomFS.img` y `Documents/save`.
+
