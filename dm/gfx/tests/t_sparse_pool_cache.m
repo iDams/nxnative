@@ -62,7 +62,7 @@ int main(void) { @autoreleasepool {
     h_nvnTextureBuilderSetStorage(&tb, (NVNmemoryPool *)&virt, 0);
     CHECK(h_nvnTextureInitialize(&tx, &tb), "sparse texture");
     mtl_reg_tex(1, (const tex_t *)&tx, NULL);
-    g_seen_done[0] |= 2; g_seen_typed[0][0] |= 2;   // a shader has read ID 1 through a 2D table: the walk makes its texture (no stand-in)
+    g_seen_done[0] |= 2;   // a shader has read ID 1: the walk makes its texture (no stand-in)
     __unsafe_unretained id<MTLBuffer> table = nil;
     pool_gpu(0, MTLTextureType2D, NVN_DPF_FLOAT, 0, &table);
     CHECK(gpu_read(table, 1) == A, "the pool table reads the first mapping's page");
