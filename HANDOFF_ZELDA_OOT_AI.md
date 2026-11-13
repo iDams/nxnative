@@ -280,3 +280,25 @@ xcrun devicectl device process launch \
 ### 12.3 Compilación e instalación en iPhone Dams (`00008150-00190C880E3B401C`)
 * Compilado e instalado encima de la app existente (`DM_COPY_ROMFS=NO`) conservando `Documents/RomFS.img` y `Documents/save`.
 
+---
+
+## 13. Diagnóstico y Corrección del Cierre al Iniciar (`CRASH sig=11 addr=0x8 pc=main+0x42cb58`) (2026-11-13)
+
+### 13.1 Causa Raíz Detectada en `log.txt`
+* **Síntoma:** El juego se cerraba exactamente a los 2 segundos de boot tras montar `save.work` e inicializar el memory pool de Metal (hilo `ModuleSystem` cargando el primer `ModelResource` / `gsys`):
+  `CRASH sig=11 addr=0x8 pc=main+0x42cb58 lr=main+0x436d48 sp=0x17480eb30`
+* **Mecanismo:** La rutina `0x4366e0` pedía una asignación de `0x1138` bytes al heap en `sp+0x38` (`0x43690c: blr x8`), la cual devolvía `x0 = 0` (`NULL`). Seguidamente el allocator de bump `0x358e660` calculaba `align_up(0 + 0x430, 8) = 0`, almacenando puntero nulo en `x23` y llamando a `0x42cb30(0)` que ejecutaba `0x42cb58: str x1, [x0, #8]`.
+* **Causa del retorno nulo:** Al habilitar `romfs_overlay/amiibo-nolimit/`, se incluyó `System/Resource/ResourceSizeTable.Product.111.Nin_Ounce_NVN2.rsizetable.zs`. En `scripts/oot_amiibo_overlay.py`, `_zcmp` comprimía por stdin con `zstd -19 -c`, produciendo una trama Zstandard con `Window Size: 8.00 MiB` y checksum `XXH64`. El descompresor nativo de Nintendo (`nn::zstd` en Horizon) rechaza ventanas mayores a 2 MiB con `ZSTD_error_frameParameter_windowTooLarge`. Al fallar la descompresión del `ResourceSizeTable`, la tabla de tamaños de recursos quedó vacía y todos los heaps de recursos fallaron al asignar.
+
+### 13.2 Corrección (`610811a9`)
+* **Archivo modificado (`scripts/oot_amiibo_overlay.py`):** `_zcmp` ahora usa un archivo temporal y los modificadores `--no-check -f`, permitiendo a `zstd` inspeccionar el tamaño real de la entrada y fijar `Window Size: 1.68 MiB (1761406 B)` con `Check: None`, idéntico a las tramas originales de Nintendo.
+* **Info.plist:** Actualizado el commit hash a `0fd9936d1eb4`.
+* **Compilación y Despliegue:**
+  * Recompilado en Release con `xcodebuild` (`DM_COPY_ROMFS=NO`).
+  * Firma verificada con `codesign --verify --deep --strict`.
+  * Instalado limpiamente sobre `iPhone Dams` (`00008150-00190C880E3B401C`) sin desinstalar.
+* **Verificación en el dispositivo:**
+  * La aplicación arrancó y superó la fase crítica de carga de `ModuleSystem`.
+  * `log.txt` confirma: `NO CRASH!`, frame generation activa, decodificación de vídeo AV1 1080p con VideoToolbox (`[codec] AV1 decoder 1`), NFC inicializado con soporte virtual amiibo (`nfp::Initialize`), y el proceso (`DmIOS`) se mantiene en ejecución activa y fluida a 30/60 FPS.
+
+
