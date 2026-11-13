@@ -25,18 +25,18 @@ def _zdec(z):
     return subprocess.run([zstd_bin, '-d', '-c'], input=z, capture_output=True, check=True).stdout
 
 def _zcmp(raw, level=19):
-    try:
-        import zstandard
-        return zstandard.ZstdCompressor(level=level).compress(raw)
-    except ImportError:
-        pass
-    try:
-        from compression import zstd
-        return zstd.compress(raw, level=level)
-    except ImportError:
-        pass
     zstd_bin = shutil.which('zstd') or '/opt/homebrew/bin/zstd'
-    return subprocess.run([zstd_bin, f'-{level}', '-c'], input=raw, capture_output=True, check=True).stdout
+    import tempfile
+    with tempfile.NamedTemporaryFile(delete=False) as in_f, tempfile.NamedTemporaryFile(delete=False) as out_f:
+        in_path, out_path = in_f.name, out_f.name
+        in_f.write(raw)
+    try:
+        subprocess.run([zstd_bin, f'-{level}', '--no-check', in_path, '-o', out_path, '-f'], check=True, capture_output=True)
+        with open(out_path, 'rb') as f:
+            return f.read()
+    finally:
+        if os.path.exists(in_path): os.unlink(in_path)
+        if os.path.exists(out_path): os.unlink(out_path)
 
 def rstb_raise(z, factor=2):
     # the resource size table (REST: CRC32 of the path → bytes the game reserves for loading the file) with this file's entry raised: the game's heap for the file
