@@ -10708,6 +10708,85 @@ static void cbs_feedback(cbs_list *l, NSError *err, const char *where) {   // fr
         } }
     free(l);
 }
+// Wide view's HUD (DM_WIDE_VIEW with DM_WIDE_ASPECT): Ocarina of Time draws its 2D (HUD, menus, speech bubbles) in a fixed 3840x2160 layout, with an orthographic projection
+// in the vertex stage's uniform block (x scale 1/1920, y 1/1080, near 0 and far 300; a flipped copy at +0x40; the layout's and the screen's size, 3840 2160 3840 2160, at +0x80;
+// a Mac run's pass dump, F6000 pass 457585, shader adacdc69c5a2cadc_b), over whatever target it draws into: on Wide view's 2352x1080 every element was 1.225 times too wide,
+// the game's canvas (patches.py, main+0xe8303c) not being what the projection follows. A block with that signature bound while the viewport is wider than 16:9 is copied into
+// the arena with both projections' x scale times (16:9) / the viewport's aspect: the layout drawn at its own shape in the middle 16:9 of the screen, as a PC game keeps its HUD
+// on an ultrawide screen. The game's world-to-layout mapping (speech bubbles and markers over a character, patches.py: main+0x20c2b0, +0x20c99c, +0x215fb0) is widened by the
+// same factor, so a bubble stays over its character. 0 when the block is not one of those
+static int wide2d_on(void) {
+    static int v = -1; if (v >= 0) return v;
+    const char *wv = getenv("DM_WIDE_VIEW"), *wa = getenv("DM_WIDE_ASPECT"), *off = getenv("DM_WIDE_HUD");
+    v = wv && !strcmp(wv, "1") && wa && atof(wa) > 1.8 && !(off && !strcmp(off, "0"));
+    if (v) MLOG("wide view: the 2D layout's projection kept at its own shape on a wider viewport (DM_WIDE_HUD=0 stretches it as before)");
+    return v;
+}
+static int g_w2d_in_draw, g_w2d_matched;
+static double g_w2d_f, g_w2d_cx;
+static uint64_t wide2d_fix(NvShader *sh, const uint8_t *src, uint64_t n, int has_s6, __strong id<MTLBuffer> *use) {
+    if (!g_w2d_in_draw || n < 64) return 0;
+    double vpw = S.has_vp ? S.vp[0][2] : (double)g_pass.tw;
+    double vph = S.has_vp ? S.vp[0][3] : (double)g_pass.th;
+    if (!(vph >= 500.0 && vpw > 0.0)) return 0;
+    double a = vpw / vph, f = (1920.0 / 1080.0) / a;
+    if (!(f < 0.99 && a < 2.65)) return 0;   // only wide viewports, never tiny offscreen caches or 16:9
+    uint32_t w[36]; memset(w, 0, sizeof w);
+    memcpy(w, src, n < sizeof w ? (size_t)n : sizeof w);
+    const float *msrc = (const float *)(const void *)w;
+    int xrow_eq = n >= 144 && (msrc[0] != 0.0f || msrc[4] != 0.0f)
+               && msrc[0] == msrc[16] && msrc[4] == msrc[20] && msrc[8] == msrc[24] && msrc[12] == msrc[28];
+    int yflip_ok = n >= 144 && ((w[5] && (w[5] ^ w[21]) == 0x80000000u) || (w[1] && (w[1] ^ w[17]) == 0x80000000u));
+    int ortho_hdr = w[3] == 0 && w[7] == 0 && w[11] == 0 && w[15] == 0x3F800000u;
+    int ortho_ok = ortho_hdr && (n < 144 || w[31] == 0x3F800000u);
+    int ui_single = n < 144 && has_s6 && ortho_hdr && w[1] == 0 && w[2] == 0 && w[4] == 0 && w[6] == 0
+                 && fabsf(msrc[0]) > 1e-5f && fabsf(msrc[0]) <= 0.02f && fabsf(msrc[5]) > 1e-5f && fabsf(msrc[5]) <= 0.02f;
+    if (!((n >= 144 && xrow_eq && yflip_ok && ortho_ok) || ui_single)) return 0;
+    if (sh) sh->logged |= (1ull << 63);   // bypass ab_buf reuse across panes/instances while wide2d is active
+    if (has_s6) {
+        const p_bind_buf *sb = &S.ssbo[0][6];
+        uint64_t p_off = (uint64_t)g_draw_binst * 120u;
+        void *smb; uint64_t smo, sgpu;
+        if (sb->addr && p_off + 120u <= sb->size && mtl_gpu_addr(sb->addr + p_off, 120, &smb, &smo, &sgpu)) {
+            float sf[30];
+            if (g_nubd && ubd_hits(sb->addr + p_off, sb->addr + p_off + 120)) {
+                memcpy(sf, (const uint8_t *)[(__bridge id<MTLBuffer>)smb contents] + smo, 120);
+                ubd_read(sb->addr + p_off, 120, sf);
+            } else {
+                uint64_t sg; const uint8_t *sc = NULL;
+                if (pend_hits(sb->addr + p_off, 120) && ubp_get(sb->addr + p_off, sb->addr + p_off + 120, &sg, &sc)) {
+                    ubc_wait(g_ubp_ready);
+                    memcpy(sf, sc, 120);
+                } else {
+                    memcpy(sf, (const uint8_t *)[(__bridge id<MTLBuffer>)smb contents] + smo, 120);
+                }
+            }
+            if (sf[28] > 0.0f && sf[28] < 10000.0f && sf[29] >= 0.0f && sf[29] < 10000.0f) {
+                float wx = 0.5f * (fabsf(sf[0] * sf[28]) + fabsf(sf[1] * sf[29]));
+                float wy = 0.5f * (fabsf(sf[4] * sf[28]) + fabsf(sf[5] * sf[29]));
+                float ndc_hw = fabsf(msrc[0]) * wx + fabsf(msrc[4]) * wy;
+                float ndc_cx = msrc[0] * sf[3] + msrc[4] * sf[7] + msrc[12];
+                if (ndc_hw >= 0.96f && fabsf(ndc_cx) < 0.05f) {
+                    static int logged_full;
+                    if (!logged_full) { logged_full = 1; MLOG("wide2d: preserving full-screen 2D backdrop (%.0fx%.0f)", vpw, vph); }
+                    return 0;   // keep centered full-screen backdrops/fades edge-to-edge
+                }
+            }
+        }
+    }
+    static int logged;
+    if (!logged) { logged = 1; MLOG("wide2d: squeezing 2D layout projections on %.0fx%.0f (factor %.4f)", vpw, vph, f); }
+    g_w2d_matched = 1;
+    g_w2d_f = f;
+    g_w2d_cx = S.has_vp ? S.vp[0][0] + vpw * 0.5 : (double)g_pass.tw * 0.5;
+    size_t len = (size_t)(n < 256 ? 256 : n);
+    size_t off = arena_alloc(len, use); uint8_t *d = g_cur_arena->cpu + off;
+    memcpy(d, src, (size_t)n); if (len > n) memset(d + n, 0, len - (size_t)n);
+    float *m = (float *)(void *)d;
+    m[0] = (float)(m[0] * f); m[4] = (float)(m[4] * f); m[8] = (float)(m[8] * f); m[12] = (float)(m[12] * f);
+    if (n >= 144) { m[16] = (float)(m[16] * f); m[20] = (float)(m[20] * f); m[24] = (float)(m[24] * f); m[28] = (float)(m[28] * f); }
+    return g_cur_arena->gpu + off;
+}
 static int encode_args_(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, int metal_vertex);
 static int encode_args(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, int metal_vertex) { cbs_note(sh); AP_B; int r = encode_args_(en, sh, nvn_stage, metal_vertex); AP_E(3); return r; }
 static int encode_args_(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, int metal_vertex) {
@@ -10715,7 +10794,7 @@ static int encode_args_(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, i
     if (nvn_stage == 1 && !metal_vertex && sh->has_logic && lop_on()) lo_bind(en);
     if (!sh->ae) return 1;
     args_sync_dirty();
-    if (!passdump() && !g_args_dirty[nvn_stage] && sh->ab_buf && sh->ab_pass == g_pass.serial && nvn_stage != 5 && !(sh->rf.drv_read[0] && sh->ab_binst != g_draw_binst) && !((sh->rf.pool || sh->rf.htab) && sh->ab_pgen != g_psnap_gen)) {
+    if (!passdump() && !g_args_dirty[nvn_stage] && sh->ab_buf && sh->ab_pass == g_pass.serial && nvn_stage != 5 && !(nvn_stage == 0 && wide2d_on() && (sh->logged & (1ull << 63))) && !(sh->rf.drv_read[0] && sh->ab_binst != g_draw_binst) && !((sh->rf.pool || sh->rf.htab) && sh->ab_pgen != g_psnap_gen)) {
         bind_args(en, nvn_stage, metal_vertex, sh->ab_buf, sh->ab_gpu, sh->ab_off, sh->rf.abi);
         g_stat_args_reuse++;
         return 1;
@@ -10740,10 +10819,43 @@ static int encode_args_(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, i
             if (!u || !u->addr || !mtl_gpu_addr(u->addr, u->size ? u->size : 1, &mb, &mo, &gpu)) {   // reads 0 (the all-zero bank), as an unbound texture slot does, instead of through a null pointer
                 RED_ONCE(16, "stage %d cb%d has no uniform buffer bound", nvn_stage, reg); slots[aid] = zero_bank_gpu(); USE(zero_bank(), MTLResourceUsageRead); continue; }
             uint64_t ul = cb_len(sh, reg, u->size);   // what the shader can read of it
-            if (g_nubd && ubd_hits(u->addr, u->addr + ul)) {   // inline updates deferred in this pass (see mtl_sub_update); ubd_conflict made sure they cover the binding or the rest can be read from memory
-                uint64_t g; const uint8_t *c; if (ubd_covers(u->addr, u->addr + ul)) gpu = ubd_shadow(u->addr, u->addr + ul);
-                else if (ubp_get(u->addr, u->addr + ul, &g, &c)) gpu = g;
-                else RED_ONCE(92, "a uniform update deferred inside the pass covers only part of the binding (stage %d cb%d): the content before the update is read", nvn_stage, reg); }
+            id<MTLBuffer> ubuf = (__bridge id<MTLBuffer>)mb;
+            uint64_t w = 0;
+            int ubd = g_nubd && ubd_hits(u->addr, u->addr + ul);
+            if (ubd) {
+                uint64_t g; const uint8_t *c;
+                if (ubd_covers(u->addr, u->addr + ul)) {
+                    gpu = ubd_shadow(u->addr, u->addr + ul);
+                    if (nvn_stage == 0 && ul >= 64 && wide2d_on()) {
+                        int has_s6 = 0; for (int k = 0; k < sh->rf.nb; k++) if (sh->rf.b[k].kind == NVN_RB_SBUFP && sh->rf.b[k].reg == 6) { has_s6 = 1; break; }
+                        if (ul <= 4096) {
+                            uint8_t tmp[4096]; ubd_read(u->addr, (size_t)ul, tmp);
+                            w = wide2d_fix(sh, tmp, ul, has_s6, &ubuf);
+                        } else if (ul <= 65536) {
+                            uint8_t *tmp = (uint8_t *)malloc((size_t)ul);
+                            if (tmp) { ubd_read(u->addr, (size_t)ul, tmp); w = wide2d_fix(sh, tmp, ul, has_s6, &ubuf); free(tmp); }
+                        }
+                    }
+                } else if (ubp_get(u->addr, u->addr + ul, &g, &c)) {
+                    gpu = g;
+                    if (nvn_stage == 0 && ul >= 64 && wide2d_on()) {
+                        int has_s6 = 0; for (int k = 0; k < sh->rf.nb; k++) if (sh->rf.b[k].kind == NVN_RB_SBUFP && sh->rf.b[k].reg == 6) { has_s6 = 1; break; }
+                        ubc_wait(g_ubp_ready);
+                        w = wide2d_fix(sh, c, ul, has_s6, &ubuf);
+                    }
+                } else RED_ONCE(92, "a uniform update deferred inside the pass covers only part of the binding (stage %d cb%d): the content before the update is read", nvn_stage, reg);
+                if (w) gpu = w;
+            } else if (nvn_stage == 0 && ul >= 64 && wide2d_on()) {
+                int has_s6 = 0; for (int k = 0; k < sh->rf.nb; k++) if (sh->rf.b[k].kind == NVN_RB_SBUFP && sh->rf.b[k].reg == 6) { has_s6 = 1; break; }
+                uint64_t g; const uint8_t *c = NULL;
+                if (pend_hits(u->addr, ul) && ubp_get(u->addr, u->addr + ul, &g, &c)) {
+                    ubc_wait(g_ubp_ready);
+                    w = wide2d_fix(sh, c, ul, has_s6, &ubuf);
+                } else {
+                    w = wide2d_fix(sh, (const uint8_t *)[ubuf contents] + mo, ul, has_s6, &ubuf);
+                }
+                if (w) gpu = w;
+            }
             if (bl) {
                 PD("B %llu st%d cb reg%d addr=%#llx size=%llu pool=%#llx+%#llx f=%g,%g,%g,%g", g_stat_pass, nvn_stage, reg, (unsigned long long)u->addr, (unsigned long long)u->size,
                    (unsigned long long)(u->addr - mo), (unsigned long long)mo, ((float *)u->addr)[0], ((float *)u->addr)[1], ((float *)u->addr)[2], ((float *)u->addr)[3]);
@@ -10756,7 +10868,7 @@ static int encode_args_(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, i
                 }
             }
             slots[aid] = gpu;
-            USE((__bridge id<MTLBuffer>)mb, MTLResourceUsageRead);
+            USE(ubuf, MTLResourceUsageRead);
         } else if (b->kind == NVN_RB_SAMPU && b->n) {   // the samplers of an array of handles in a uniform buffer: element k = the sampler ID of the handle at the array's base + 8k (see the textures below)
             for (int k = 0; k < b->n; k++) {   // only registered IDs are looked up: most elements are other data the shader never picks as a handle
                 int sid = sampu_id(nvn_stage, b, k); if (sid >= g_nsreg || !g_sreg_ok[sid]) sid = 0;
@@ -13730,7 +13842,12 @@ static void draw_(const p_draw *dw, const p_draw_idx *di) {
         if (pr->sh[0]) vconv_bind(en, pr->sh[0], S.rast_discard, g_geo_vrange ? g_geo_vrange : dw, g_geo_vrange ? NULL : di);   // integer inputs fed float-type formats or 8 / 16-bit integers of the other sign (see vconv_ncomp, vconv_int); a lean geometry draw: the vertices its indices name
     }
     g_kd_force = kd_draw(pr, dw, di);
-    if (pr->sh[0]) encode_args(en, pr->sh[0], 0, 1);
+    g_w2d_matched = 0;
+    if (pr->sh[0]) {
+        g_w2d_in_draw = wide2d_on();
+        encode_args(en, pr->sh[0], 0, 1);
+        g_w2d_in_draw = 0;
+    }
     if (pr->sh[1] && !S.rast_discard) encode_args(en, pr->sh[1], 1, 0);
     // Binding a texture view can upgrade its texture first (tex_upgrade: a format view of a texture made without PixelFormatView), and the upgrade's copy goes through blit(),
     // which ends the render pass: en is then an ended encoder, and drawing on it crashed in the driver (AGX reads its released context: Need for Speed: Hot Pursuit Remastered,
@@ -13742,6 +13859,26 @@ static void draw_(const p_draw *dw, const p_draw_idx *di) {
     }
     // Parameter binding captures the actual resources under the registry lock; if the version changed between the eligibility check and the binding, split and retry before any GPU draw.
     if (g_rt_range_active && (g_pass.reg_gen != g_reg_gen || g_pass.ser_gen != g_ser_gen || g_pass.range_dirty != nvn_dirty_now())) { rp_end(); draw(dw, di); return; }
+    if (g_w2d_matched && R.has_sc && !S.rast_discard && R.sc.w > 0) {
+        double vpw = S.has_vp ? S.vp[0][2] : (double)tw;
+        if (!(R.sc.x <= 0 && (long)R.sc.x + R.sc.w >= (long)tw) && (double)R.sc.w < vpw * 0.98) {
+            long x0 = (long)llround(g_w2d_cx + ((double)R.sc.x - g_w2d_cx) * g_w2d_f);
+            long x1 = (long)llround(g_w2d_cx + ((double)R.sc.x + R.sc.w - g_w2d_cx) * g_w2d_f);
+            long y0 = R.sc.y <= 0 ? 0 : R.sc.y, y1 = (long)R.sc.y + R.sc.h;
+            if (x0 < 0) x0 = 0; if (x1 > (long)tw) x1 = tw;
+            if (y1 > (long)th) y1 = th;
+            if (x1 <= x0 || y1 <= y0) { PD("Z %llu draw skipped: empty wide2d scissor", g_stat_pass); return; }
+            MTLScissorRect wsc = {(NSUInteger)x0, (NSUInteger)y0, (NSUInteger)(x1 - x0), (NSUInteger)(y1 - y0)};
+            static int logged_x[4], n_logged;
+            int seen = 0; for (int k = 0; k < n_logged; k++) if (logged_x[k] == R.sc.x) { seen = 1; break; }
+            if (!seen && n_logged < 4) {
+                logged_x[n_logged++] = R.sc.x;
+                MLOG("wide2d: scissor %d,%d,%d,%d -> %lu,%lu,%lu,%lu", R.sc.x, R.sc.y, R.sc.w, R.sc.h,
+                     (unsigned long)wsc.x, (unsigned long)wsc.y, (unsigned long)wsc.width, (unsigned long)wsc.height);
+            }
+            if (!(g_ed.ok & ED_SC) || memcmp(&g_ed.sc, &wsc, sizeof wsc)) { enc_r_scissor(en, wsc); g_ed.sc = wsc; g_ed.ok |= ED_SC; }
+        }
+    }
     int prim = dw ? dw->prim : di->prim;
     MTLPrimitiveType mp;
     switch (prim) {

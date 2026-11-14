@@ -301,4 +301,36 @@ xcrun devicectl device process launch \
   * La aplicación arrancó y superó la fase crítica de carga de `ModuleSystem`.
   * `log.txt` confirma: `NO CRASH!`, frame generation activa, decodificación de vídeo AV1 1080p con VideoToolbox (`[codec] AV1 decoder 1`), NFC inicializado con soporte virtual amiibo (`nfp::Initialize`), y el proceso (`DmIOS`) se mantiene en ejecución activa y fluida a 30/60 FPS.
 
+---
+
+## 14. Modo Experimental Hor+ Wide View `21:9` (Rama `exp/wide-view`) (2026-11-13)
+
+> [!WARNING]
+> Versión **experimental** publicada en la rama `exp/wide-view` (tag `v1.1-oot-wideview-exp`). La rama estable `stable/oot-30fps` (`d0a4b0e3`, tag `v1.0-oot-30fps-stable`) y `main` (`6f0aff4f`) permanecen intactas sin cambios.
+
+### 14.1 Cambios implementados (`DM_WIDE_VIEW=1`, sin tocar `DMSH_CHAIN`)
+* **`dm/ios/Sources/front_ios.m`:** Cuando `DM_WIDE_VIEW=1`, detecta el aspect ratio de la ventana del iPhone (`1.8 <= r <= 2.6`) y exporta `DM_WIDE_ASPECT` antes de iniciar el host (en `iPhone Dams`: `2.173:1` en `956x440` pts).
+* **`dm/host/loader.c` (`dm_fps_state_apply`):** Calcula los anchos múltiplos de 16 para `DM_WIDE_VIEW=1` + `DM_WIDE_ASPECT`, los escribe en la página compartida `+0x100..+0x114` y pasa `w1 x 1440` a `mtl_present_screen` (en `iPhone Dams` `2.173:1`: salida `3136x1440`, handheld `2352x1080`, aspecto `2.1778`).
+* **`dm/games/0400486024DEC000/patches.py` (`wide_view`):** Stubs ARM64 en `v131072` (`ctx.base == 0x6e6be0`) para dimensiones de render (`0x1202ee0`, `0x31f39f4`, `0x31f3a00`, `0xecbc80`, `0x112c604`), cámaras 3D/proyecciones (`0x9b5f38`, `0x2e1be40`, `0x14fc7e4`, `0xe07154`, `0x27b13f8`, `0x2e1cb84`, `0x4c638c` y 11 stores de `sead::PerspectiveProjection`), canvas 2D (`0xe8303c`) y mapeo mundo→layout para marcadores/burbujas (`0x20c2b0`, `0x20c99c`, `0x215fb0`). Registra `WIDE_VIEW` en `ctx.capabilities`.
+* **`dm/gfx/nvn/hle_nvn.c` (`dm_wide_note`):** Registra en el log qué anchos de canvas 2D y aspectos de cámara tomó el juego (`+0x120..+0x13f`).
+* **`dm/gfx/nvn/nvn_mtl.m` (`wide2d_on`, `wide2d_fix` y ajuste de scissor en `draw_`):**
+  * Mantiene la proyección del layout 2D (`3840x2160`) centrada en su relación `16:9` dentro de la pantalla ancha (factor `f = (16/9) / viewport_aspect`, desactivable con `DM_WIDE_HUD=0`).
+  * Detecta quads 2D centrados de pantalla completa en `S.ssbo[0][6]` (`ndc_hw >= 0.96`, `|ndc_cx| < 0.05`) para conservar de borde a borde los fondos/oscurecidos (como el menú *Load*).
+  * Ajusta horizontalmente las tijeras (`MTLScissorRect`) de subpaneles no fullscreen en `draw_()` usando el mismo centro `g_w2d_cx` y factor `g_w2d_f`, corrigiendo el desplazamiento de scrolls y del minimapa en juego.
+* **`dm/games/settings.tsv` y `docs/env_switches.tsv`:** Agrega el ajuste `DM_WIDE_VIEW` (activo por defecto en la UI) y documenta `DM_WIDE_VIEW`, `DM_WIDE_ASPECT` y `DM_WIDE_HUD`.
+
+### 14.2 Pruebas y Verificación Visual
+* **Unit tests ejecutados tras el último cambio en código:**
+  * `t_present_crop`: `117 checks, 0 failed` (4 ejecuciones).
+  * `t_dlss_mfx`: `18 checks, 0 failed` (3 ejecuciones).
+  * `t_ub`: `47 checks, 0 failed`.
+  * `python3 -m unittest dm/tools/tests/test_lint_c.py dm/tools/tests/test_patches.py dm/tools/tests/test_settings.py`: `43 tests OK`.
+* **Build y dispositivo (`iPhone Dams` — `00008150-00190C880E3B401C`):**
+  * Compilado en `Release` con `DM_COPY_ROMFS=NO`, firma verificada (`codesign --verify --deep --strict`), instalado sin borrar datos ni saves.
+  * Confirmado visualmente en juego: vista `2352x1080` sin barras negras ni estiramiento 3D, oscurecido del menú *Load* completo de borde a borde y minimapa/paneles centrados y alineados.
+
+### 14.3 Nota de Rendimiento Abierta
+* En la captura en vivo `DM_WIDE_VIEW=1` con `DM_FRAMEGEN=1` (`2125x976`), se observó caída fuerte de FPS y alto tiempo de GPU; su diagnóstico queda documentado y en revisión sobre esta rama experimental.
+
+
 
