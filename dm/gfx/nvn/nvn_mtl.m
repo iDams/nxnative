@@ -6215,7 +6215,7 @@ static void treg_sparse_notes(void) {
     g_ntreg_sp = w;
     os_unfair_lock_unlock(&g_rmu);
     if (ns > 1) qsort(ser, ns, sizeof *ser, sp_cmp);
-    for (size_t i = 0; i < ns; i++) if (!i || ser[i] != ser[i - 1]) ser_note(ser[i]);
+    for (size_t i = 0; i < ns; i++) if (!i || ser[i] != ser[i - 1]) own_note(ser[i]);
 }
 static int *g_treg_transient; static size_t g_ntreg_transient, g_treg_transient_cap;
 // Lock-free copy of texture ID → serial (the replay hot path only needs the serial: store lookahead index, binding set of the clear-only hoist): texture IDs are 20 bits, fixed 1M entries (BSS, only touched pages are used),

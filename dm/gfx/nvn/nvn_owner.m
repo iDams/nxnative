@@ -7,7 +7,7 @@
 #include <mach/mach.h>
 #include <os/lock.h>
 
-#define ODIE(...) do { dm_log("[dm] [nvn-mtl] FATAL " __VA_ARGS__); abort(); } while (0)
+#define ODIE(...) do { LOG("[nvn-mtl] FATAL " __VA_ARGS__); abort(); } while (0)
 
 pthread_mutex_t g_smu = PTHREAD_MUTEX_INITIALIZER;
 
