@@ -131,6 +131,7 @@ static void test_dispatch_after(dispatch_time_t when, dispatch_queue_t target, d
 @end
 @interface TestHaptics : NSObject
 @property NSSet *supportedLocalities;
+@property NSSet *failingLocalities;
 @property NSMutableArray<TestEngine *> *engines;
 @property NSMutableArray<GCHapticsLocality> *requestedLocalities;
 @property int attempts, failureStage;
@@ -150,6 +151,7 @@ static void test_dispatch_after(dispatch_time_t when, dispatch_queue_t target, d
     [self.requestedLocalities addObject:locality];
     if (self.attempts == 1 && self.failureStage == 1) return nil;
     TestEngine *e = [TestEngine new]; [self.engines addObject:e]; e.noAdvanced = self.noAdvanced;
+    if ([self.failingLocalities containsObject:locality]) e.fail = YES;
     if (self.attempts == 1) {
         e.fail = self.failureStage == 2; e.failPattern = self.failureStage == 3;
         e.failPlayer = self.failureStage == 4; e.failSend = self.failureStage == 5;
@@ -395,6 +397,71 @@ int main(void) { @autoreleasepool {
     send_pair(0.3, 0.4); send_pair(0.3, 0.4); drain();
     assert([split3.haptics.requestedLocalities.lastObject isEqual:GCHapticsLocalityHandles]);   // the handles' own group when the controller lists it
     send_pair(0, 0); drain();
+    // If the merged GCHapticsLocalityHandles engine fails to start, its fallback moves the route to GCHapticsLocalityDefault
+    TestController *split4 = [TestController new]; split4.haptics = [TestHaptics new]; split4.haptics.noAdvanced = YES;
+    split4.haptics.supportedLocalities = [NSSet setWithObjects:GCHapticsLocalityDefault, GCHapticsLocalityHandles, GCHapticsLocalityLeftHandle, GCHapticsLocalityRightHandle, nil];
+    split4.haptics.failingLocalities = [NSSet setWithObject:GCHapticsLocalityHandles];
+    dm_haptics_apple_controller(0, (id)split4); drain();
+    send_pair(0.3, 0.4); send_pair(0.3, 0.4); drain();
+    assert([split4.haptics.requestedLocalities.lastObject isEqual:GCHapticsLocalityHandles]);
+    expire_retries(); send_pair(0.3, 0.4); drain();
+    assert([split4.haptics.requestedLocalities.lastObject isEqual:GCHapticsLocalityDefault]);
+    assert(split4.haptics.engines.lastObject.plainPlayers == 1);
+    assert(fabsf(split4.haptics.engines.lastObject.testPlayer.levels.lastObject.floatValue - 0.5f) < 1e-6f);
+    send_pair(0, 0); drain();
+    // A DualSense keeps its handle route when advanced players are refused: each handle moves to plain players on a new engine of its own
+    // locality, at its own level
+    TestController *sense = [TestController new]; sense.haptics = [TestHaptics new]; sense.haptics.noAdvanced = YES;
+    sense.productCategory = GCProductCategoryDualSense; sense.haptics.supportedLocalities = split3.haptics.supportedLocalities;
+    dm_haptics_apple_controller(0, (id)sense); drain();
+    assert(channels[0].count == 2 && !channels[0][0].simple && !channels[0][0].merge && !channels[0][1].merge);
+    send_pair(0.3, 0.4); drain();
+    NSArray *want = @[GCHapticsLocalityLeftHandle, GCHapticsLocalityLeftHandle, GCHapticsLocalityRightHandle, GCHapticsLocalityRightHandle];
+    assert(channels[0].count == 2 && channels[0][0].simple && channels[0][1].simple && [sense.haptics.requestedLocalities isEqual:want]);
+    assert(sense.haptics.engines[1].plainPlayers == 1 && sense.haptics.engines[3].plainPlayers == 1);
+    assert(fabsf(sense.haptics.engines[1].testPlayer.levels.lastObject.floatValue - 0.3f) < 1e-6f);
+    assert(fabsf(sense.haptics.engines[3].testPlayer.levels.lastObject.floatValue - 0.4f) < 1e-6f);
+    send_pair(0, 0.4); drain();   // one side alone
+    assert(sense.haptics.engines[1].testPlayer.levels.lastObject.floatValue == 0 && fabsf(sense.haptics.engines[3].testPlayer.levels.lastObject.floatValue - 0.4f) < 1e-6f);
+    send_pair(0, 0); drain();
+    // With advanced players a DualSense plays them, as any controller with both handles does
+    TestController *sense2 = [TestController new]; sense2.haptics = [TestHaptics new];
+    sense2.productCategory = GCProductCategoryDualSense; sense2.haptics.supportedLocalities = split3.haptics.supportedLocalities;
+    dm_haptics_apple_controller(0, (id)sense2); drain();
+    send_pair(0.3, 0.4); drain();
+    assert(sense2.haptics.attempts == 2 && !channels[0][0].simple && !channels[0][1].simple);
+    assert(sense2.haptics.engines[0].plainPlayers == 0 && sense2.haptics.engines[1].plainPlayers == 0);
+    assert(fabsf(sense2.haptics.engines[1].testPlayer.levels.lastObject.floatValue - 0.4f) < 1e-6f);
+    send_pair(0, 0); drain();
+    // Paired Joy-Cons report "JoyCon (L)" and "JoyCon (R)" instead of handle localities, and keep both channels on plain players
+    GCHapticsLocality joyL = (GCHapticsLocality)@"JoyCon (L)", joyR = (GCHapticsLocality)@"JoyCon (R)";
+    NSSet *joyLocalities = [NSSet setWithObjects:GCHapticsLocalityAll, GCHapticsLocalityDefault, joyL, joyR, nil];
+    TestController *joy = [TestController new]; joy.haptics = [TestHaptics new]; joy.haptics.noAdvanced = YES;
+    joy.vendorName = @"Joy-Con (L/R)"; joy.productCategory = @"Nintendo Switch Joy-Con (L/R)";
+    joy.haptics.supportedLocalities = joyLocalities;
+    dm_haptics_apple_controller(0, (id)joy); drain();
+    assert(channels[0].count == 2 && !channels[0][0].simple && !channels[0][0].merge && !channels[0][1].merge);
+    send_pair(0.6, 0); drain();   // left Joy-Con alone: right engine is not even started
+    NSArray *joyLeftOnly = @[joyL, joyL];
+    assert(channels[0].count == 2 && channels[0][0].simple && !channels[0][1].simple && [joy.haptics.requestedLocalities isEqual:joyLeftOnly]);
+    assert(fabsf(joy.haptics.engines[1].testPlayer.levels.lastObject.floatValue - 0.6f) < 1e-6f);
+    send_pair(0, 0.4); drain();   // right Joy-Con alone: left silences, right starts its own plain player
+    NSArray *joyBoth = @[joyL, joyL, joyR, joyR];
+    assert(channels[0][1].simple && [joy.haptics.requestedLocalities isEqual:joyBoth]);
+    assert(joy.haptics.engines[1].testPlayer.levels.lastObject.floatValue == 0);
+    assert(fabsf(joy.haptics.engines[3].testPlayer.levels.lastObject.floatValue - 0.4f) < 1e-6f);
+    send_pair(0.3, 0.7); drain();
+    assert(fabsf(joy.haptics.engines[1].testPlayer.levels.lastObject.floatValue - 0.3f) < 1e-6f);
+    assert(fabsf(joy.haptics.engines[3].testPlayer.levels.lastObject.floatValue - 0.7f) < 1e-6f);
+    send_pair(0, 0); drain();
+    TestController *joyFail = [TestController new]; joyFail.haptics = [TestHaptics new];
+    joyFail.haptics.supportedLocalities = joyLocalities; joyFail.haptics.failureStage = 2;
+    dm_haptics_apple_controller(0, (id)joyFail); drain();
+    send_pair(0.3, 0.4); drain();
+    assert(joyFail.haptics.attempts == 1 && channels[0].count == 1);
+    expire_retries(); send_pair(0.3, 0.4); drain();
+    assert(joyFail.haptics.attempts == 2 && [joyFail.haptics.requestedLocalities.lastObject isEqual:GCHapticsLocalityDefault]);
+    send_pair(0, 0); drain();
     dm_haptics_apple_controller(0, nil); drain();   // disconnect discards the controller factory and its old callbacks
     assert(!(dm_haptics_available() & 1));
     TestController *unsupported = [TestController new]; unsupported.haptics = [TestHaptics new];
@@ -461,5 +528,5 @@ int main(void) { @autoreleasepool {
     assert(back.closes == 1 && second.closes == 1 && objects == 0);   // every iterator and service released
     assert(ds4_crc((const uint8_t *)"123456789", 9) == 0xCBF43926u);   // the report's CRC32 (IEEE, reflected)
     dm_haptics_apple_shutdown();
-    puts("Apple haptics: channels, pulses, idle release, startup handlers, engine replacement, backoff, stale callbacks, plain players, level cutoff and the DualShock 4 route passed");
+    puts("Apple haptics: channels, pulses, idle release, startup handlers, engine replacement, backoff, stale callbacks, plain players, the DualSense's handles, Joy-Con localities, level cutoff and the DualShock 4 route passed");
 } }

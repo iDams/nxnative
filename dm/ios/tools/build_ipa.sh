@@ -263,7 +263,7 @@ MAPS+=("$P/msl/$MSLDIR=$MSL_IOS/$MSLDIR" "$P=$APP")
 # Amiibo (a profile with amiibo.tsv: Ocarina of Time's in-game Amiibo menu, GameMenu.swift): the app's romfs_overlay holds that list and, with the profile's amiibo_overlay on, the
 # game's own Game/AmiiboSetting with every amiibo's daily limit off, made here from the player's RomFS image (scripts/oot_amiibo_overlay.py; nothing of the game is in the repository).
 # main.m serves it over the RomFS (DM_ROMFS_OVERLAY, hle_fs.c rom_overlay_expand) and points DM_AMIIBO at Documents/amiibo.txt. A folder of its own, so no other replacement is packed
-if [ -f "$GD/amiibo.tsv" ]; then
+if [ -n "${GD:-}" ] && [ -f "$GD/amiibo.tsv" ]; then
   AOV=$O/romfs_overlay; rm -rf "$AOV"; mkdir -p "$AOV" && cp "$GD/amiibo.tsv" "$AOV/" || die "amiibo overlay $AOV"
   if grep -qE '^amiibo_overlay[[:space:]]+on' "$GD/game.tsv" && [ -f "$ROMFS" ]; then
     if python3 "$DM/../scripts/oot_amiibo_overlay.py" "$ROMFS" "$AOV" > "$O/amiibo_overlay.log" 2>&1; then t "amiibo: the list and the game's amiibo file with no daily limit ($(head -1 "$O/amiibo_overlay.log"))"

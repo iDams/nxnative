@@ -217,7 +217,8 @@ static void report(NSError *e, NSString *target, const char *stage) {
                 error = nil;
                 [self halt]; self.engine = nil;
                 // Without advanced players, the engines of the left and right handles override each other on an Xbox Wireless Controller instead of
-                // adding up: with both playing, the handle motors were not felt, while one engine for both handles was
+                // adding up: with both playing, the handle motors were not felt, while one engine for both handles was. A route with no merge
+                // (one engine, or a DualSense's / paired Joy-Con's handles) keeps its channels
                 if (self.merge) { dm_haptics_clear(self.player); self.merge(); return; }
                 self.simple = YES;
                 if (![self startEngine]) return;
@@ -366,6 +367,9 @@ static void default_controller(int p, GCDeviceHaptics *h, NSTimeInterval retryAf
     add_engine(p, -1, @"controller default", ^CHHapticEngine *(NSError **e) { (void)e; return [h createEngineWithLocality:GCHapticsLocalityDefault]; });
     channels[p].lastObject.retryAfter = retryAfter;
 }
+static GCHapticsLocality const kJoyConLeftLocality = (GCHapticsLocality)@"JoyCon (L)";
+static GCHapticsLocality const kJoyConRightLocality = (GCHapticsLocality)@"JoyCon (R)";
+
 static void configure(int p, GCController *controller) {
     for (DmRumbleChannel *c in channels[p]) [c stop];
     channels[p] = [NSMutableArray new];
@@ -377,9 +381,13 @@ static void configure(int p, GCController *controller) {
     if (controller) {
         GCDeviceHaptics *h = controller.haptics;
         NSSet *localities = h.supportedLocalities;
-        if ([localities containsObject:GCHapticsLocalityLeftHandle] && [localities containsObject:GCHapticsLocalityRightHandle]) {
-            add_engine(p, 0, @"controller left handle", ^CHHapticEngine *(NSError **e) { (void)e; return [h createEngineWithLocality:GCHapticsLocalityLeftHandle]; });
-            add_engine(p, 1, @"controller right handle", ^CHHapticEngine *(NSError **e) { (void)e; return [h createEngineWithLocality:GCHapticsLocalityRightHandle]; });
+        BOOL handles = [localities containsObject:GCHapticsLocalityLeftHandle] && [localities containsObject:GCHapticsLocalityRightHandle];
+        BOOL joycons = !handles && [localities containsObject:kJoyConLeftLocality] && [localities containsObject:kJoyConRightLocality];
+        if (handles || joycons) {
+            GCHapticsLocality leftLoc = handles ? GCHapticsLocalityLeftHandle : kJoyConLeftLocality;
+            GCHapticsLocality rightLoc = handles ? GCHapticsLocalityRightHandle : kJoyConRightLocality;
+            add_engine(p, 0, handles ? @"controller left handle" : @"controller left Joy-Con", ^CHHapticEngine *(NSError **e) { (void)e; return [h createEngineWithLocality:leftLoc]; });
+            add_engine(p, 1, handles ? @"controller right handle" : @"controller right Joy-Con", ^CHHapticEngine *(NSError **e) { (void)e; return [h createEngineWithLocality:rightLoc]; });
             // Advertised handle localities can still fail to start. Fall back to the standard
             // controller engine, once, rather than keeping two unusable helper connections.
             __weak NSArray *route = channels[p];
@@ -391,14 +399,29 @@ static void configure(int p, GCController *controller) {
                 dm_haptics_route(p, 1);
                 fprintf(stderr, "haptics: player %d retrying with the default controller locality\n", p + 1);
             };
-            // A server without advanced players gets one engine for both handles (see apply)
-            for (DmRumbleChannel *c in channels[p]) c.merge = ^{
+            // A server without advanced players gets one engine for both handles (see apply), except for a DualSense or paired Joy-Cons:
+            // plain players on the DualSense's handle engines are felt apart (PR #986: Bluetooth, macOS 26.7.1), and JoyCon (L) / JoyCon (R)
+            // are two separate Bluetooth controllers, so each keeps its engine and its own level
+            if (handles && ![controller.productCategory isEqualToString:GCProductCategoryDualSense]) for (DmRumbleChannel *c in channels[p]) c.merge = ^{
                 if (!route || channels[p] != route) return;
                 for (DmRumbleChannel *old in channels[p]) [old stop];
                 channels[p] = [NSMutableArray new];
                 GCHapticsLocality both = [localities containsObject:GCHapticsLocalityHandles] ? GCHapticsLocalityHandles : GCHapticsLocalityDefault;
                 add_engine(p, -1, @"controller handles", ^CHHapticEngine *(NSError **e) { (void)e; return [h createEngineWithLocality:both]; });
-                channels[p].lastObject.simple = YES;
+                DmRumbleChannel *m = channels[p].lastObject;
+                m.simple = YES;
+                if (![both isEqualToString:GCHapticsLocalityDefault]) {
+                    __weak NSArray *merged = channels[p];
+                    m.fallback = ^(NSTimeInterval retryAfter) {
+                        if (!merged || channels[p] != merged) return;
+                        for (DmRumbleChannel *old in channels[p]) [old stop];
+                        channels[p] = [NSMutableArray new];
+                        default_controller(p, h, retryAfter);
+                        channels[p].lastObject.simple = YES;
+                        dm_haptics_route(p, 1);
+                        fprintf(stderr, "haptics: player %d retrying with the default controller locality\n", p + 1);
+                    };
+                }
                 dm_haptics_route(p, 1);
                 fprintf(stderr, "haptics: player %d plays both motors on one engine (%s)\n", p + 1, both.UTF8String);
             };
