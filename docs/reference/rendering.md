@@ -1296,7 +1296,7 @@ The replay on Metal (`dm/gfx/nvn/nvn_mtl.m`) and the Vulkan and OpenGL layers. E
 
 - **Symptom:** tall blue / textured panels that flickered frame to frame: the fountain's vertex shader pushed the water surface to the top of the screen.
 - **Cause:** the host batches consecutive copies, fills and inline uniform updates (`UpdateUniformBuffer`) into one compute encoder, and Metal 4 does not order operations inside one encoder. Mario writes the same uniform slot twice in a row each frame (4 bytes of −1, then 16 bytes of wave coefficients); without an intra-encoder barrier the writes occasionally landed in reverse order, the fountain's GPU wave simulation (a 512×1 RGBA16F texture updated by render → copy back → splash pass every frame) ran with −1 as its self coefficient and diverged to ±65504.
-- **Fix:** `blit_buf` now inserts `barrierAfterEncoderStages` when an operation reads or writes a guest range an earlier operation in the same encoder wrote; texture copies always get one. Render passes have their own encoder with full barriers, so they were not affected; compute dispatches share the copy encoder and always get a barrier, as texture copies do (Hyrule Warriors: Age of Calamity, [Compute dispatches share the copy encoder](#compute-dispatches-share-the-copy-encoder)).
+- **Fix:** `blit_buf` now inserts `barrierAfterEncoderStages` when an operation reads or writes a guest range an earlier operation in the same encoder wrote; texture copies always get one. Render passes have their own encoder with full barriers, so they were not affected; compute dispatches share the copy encoder ([Compute dispatches share the copy encoder](#compute-dispatches-share-the-copy-encoder)) and are ordered against copies by the same ranges ([Compute dispatches that wait for each other](frame-rate.md#compute-dispatches-that-wait-for-each-other)).
 - **Check:** `DM_NVN_BLIT_ORDER=0` turns the barriers off to reproduce.
 - **Found on:** [Super Mario Bros. Wonder](../../dm/games/010015100B514000/README.md).
 
@@ -1364,13 +1364,20 @@ The replay on Metal (`dm/gfx/nvn/nvn_mtl.m`) and the Vulkan and OpenGL layers. E
 - **Found on:** [Paper Mario: The Thousand-Year Door](../../dm/games/0100ECD018EBE000/README.md) (at the title); [Batman: Arkham Knight](../../dm/games/0100ACD0163D0000/README.md#files-and-shaders) (`stage 0 cb0`, at boot: the first command buffer draws before the game has bound any uniform buffer); [Resident Evil 4](../../dm/games/0400569027BF4000/README.md) (`stage 5 cb1`, frame 0).
 - **Check:** a pass dump of the frame (`DM_NVN_PASSDUMP=<frame>`, frame 0 for the boot) shows the draw (`j` line) and its stage's `K` line with no `B … cb` line, and the frame's `[nvn]` call counts show whether the game called `CommandBufferBindUniformBuffer` at all.
 
+### A uniform slot the game binds empty
+
+- **Symptom:** `[RED] stage 5 cb1 has no uniform buffer bound: shader … address 0 size 0 (frame 0)`, once per run; now `stage 5 cb1 is bound empty by the game (address 0, size 0): shader … reads it as 0`, once, not red.
+- **Cause:** none in the host. The game binds the slot itself with address 0 and size 0: Resident Evil 4 binds compute slot 0 and then slot 1 empty before every dispatch of `4e06df4bbdf9b7c9` (a log of each bind's payload at replay, frames 0 to 2), whose cb1 reads it does not use. Every read of a size-0 binding is past its size, which reads 0 on Maxwell as for a short binding, so the zero bank the host binds is what the console reads.
+- **Fix:** the replay state keeps which uniform slots a bind has set (`S.ubo_set`), and `cbuf_slot` notes an empty binding the game made once, without `[RED]`. A slot never bound ([An unbound uniform slot reads the zero bank](#an-unbound-uniform-slot-reads-the-zero-bank)) and an address in no pool stay red.
+- **Found on:** [Resident Evil 4](../../dm/games/0400569027BF4000/README.md) (`stage 5 cb1`, frame 0).
+
 ### Compute dispatches share the copy encoder
 
 - **Symptom:** GPU time per frame doubles with many small dispatches (Age of Calamity: GPU 9 → 18 ms a frame on the Mac; the iPhone's 15 → 51 ms, 17 fps).
 - **Cause:** each dispatch had a compute encoder of its own with full queue barriers on both sides, a GPU drain per dispatch: about 10 µs of GPU each on the Mac.
 - **Fix:** dispatches now go into the open copy encoder, each after a barrier inside it (as texture copies are, `blit`), with the compute argument table set once per encoder (`dispatch_enc`): about 1.3 µs each.
 - **Found on:** [Hyrule Warriors: Age of Calamity](../../dm/games/01002B00111A2000/README.md): after its first cutscene the first battle runs about 900–1,500 small dispatches a frame on the Mac (an iPhone log's call counts suggest more), each after a game barrier, at the same draws and passes; GPU 7.3 → 8.1 ms across the cutscene with the change.
-- **Note:** `DM_NVN_DISPATCH_OWN=1` (and `DM_NVN_PASSGPU`, which times each dispatch) gives each dispatch its own encoder again.
+- **Note:** `DM_NVN_DISPATCH_OWN=1` (and `DM_NVN_PASSGPU`, which times each dispatch) gives each dispatch its own encoder again. A barrier before every dispatch is now only where NVN asks for one: [Compute dispatches that wait for each other](frame-rate.md#compute-dispatches-that-wait-for-each-other).
 
 ### Compute bindings prepare texture copies before the dispatch encoder
 

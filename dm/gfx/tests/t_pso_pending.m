@@ -198,44 +198,41 @@ static int wait_kick_job(kick_job *j, int timeout_ms) {
 
 static void test_two_active_exact_take_and_release(void) {
     reset_queue();
-    GateDevice *dev = [[GateDevice alloc] initBlockingThrough:2 nilCall:0]; g_dev = (id<MTLDevice>)(id)dev;
-    pso_key a = make_key(1), b = make_key(2), c = make_key(3), wrong_attachment = a;
+    GateDevice *dev = [[GateDevice alloc] initBlockingThrough:PSO_PEND_ACTIVE nilCall:0]; g_dev = (id<MTLDevice>)(id)dev;
+    pso_key keys[PSO_PEND_ACTIVE], c = make_key(PSO_PEND_ACTIVE + 1), wrong_attachment;
+    for (int i = 0; i < PSO_PEND_ACTIVE; i++) keys[i] = make_key((unsigned)(i + 1));
+    wrong_attachment = keys[0];
     wrong_attachment.cfmt[0] = MTLPixelFormatBGRA8Unorm;
-    EXPECT_EQ("first prediction admitted", 1, pso_pend_kick(&a, test_vs, test_fs));
-    if (![dev waitForEntered:1 timeoutMs:5000]) { EXPECT_TRUE("first worker entered fake compiler", 0); [dev releaseAll]; drain_queue(5000); reset_queue(); return; }
-    EXPECT_EQ("second prediction admitted", 1, pso_pend_kick(&b, test_vs, test_fs));
-    if (![dev waitForEntered:2 timeoutMs:5000]) { EXPECT_TRUE("second worker entered fake compiler", 0); [dev releaseAll]; drain_queue(5000); reset_queue(); return; }
-    EXPECT_EQ("two compilation slots are outstanding", 2, queue_active_count());
+    for (int i = 0; i < PSO_PEND_ACTIVE; i++) {
+        EXPECT_EQ("speculative prediction admitted", 1, pso_pend_kick(&keys[i], test_vs, test_fs));
+        if (![dev waitForEntered:i + 1 timeoutMs:5000]) { EXPECT_TRUE("worker entered fake compiler", 0); [dev releaseAll]; drain_queue(5000); reset_queue(); return; }
+    }
+    EXPECT_EQ("all active prediction slots are outstanding", PSO_PEND_ACTIVE, queue_active_count());
     kick_job job = {.k = c, .vs = test_vs, .fs = test_fs}; pthread_mutex_init(&job.mu, NULL); pthread_cond_init(&job.cv, NULL);
     pthread_t thread; int thread_error = pthread_create(&thread, NULL, kick_job_main, &job);
-    EXPECT_EQ("start bounded third-kick check", 0, thread_error);
+    EXPECT_EQ("start bounded extra-kick check", 0, thread_error);
     if (thread_error) { [dev releaseAll]; drain_queue(5000); reset_queue(); pthread_cond_destroy(&job.cv); pthread_mutex_destroy(&job.mu); return; }
     int returned_without_wait = wait_kick_job(&job, 1000);
-    EXPECT_TRUE("third kick returns while both compiler gates remain closed", returned_without_wait);
+    EXPECT_TRUE("extra kick returns while active compiler gates remain closed", returned_without_wait);
     if (!returned_without_wait) [dev releaseAll];
     pthread_join(thread, NULL);
-    EXPECT_EQ("third prediction is rejected at active limit", 0, job.result);
+    EXPECT_EQ("extra prediction is rejected at active limit", 0, job.result);
     pthread_cond_destroy(&job.cv); pthread_mutex_destroy(&job.mu);
     if (!returned_without_wait) { drain_queue(5000); reset_queue(); return; }
-    EXPECT_EQ("rejected third prediction never reaches compiler", 2, [dev entered]);
-    EXPECT_EQ("rejected third prediction does not consume an admission order", 2, g_pp_kicked);
+    EXPECT_EQ("rejected extra prediction never reaches compiler", PSO_PEND_ACTIVE, [dev entered]);
+    EXPECT_EQ("rejected extra prediction does not consume an admission order", PSO_PEND_ACTIVE, g_pp_kicked);
     EXPECT_TRUE("different attachment key does not match pending key", pso_pend_take(&wrong_attachment) == nil);
-    EXPECT_TRUE("wrong-key take leaves original pending", queue_index(&a) >= 0);
+    EXPECT_TRUE("wrong-key take leaves original pending", queue_index(&keys[0]) >= 0);
 
-    [dev releaseThrough:1];
-    EXPECT_TRUE("first worker completes", pending_done(&a, 5000));
-    TestPipelineState *expected_a = [dev resultForCall:1];
-    id<MTLRenderPipelineState> taken_a = pso_pend_take(&a);
-    EXPECT_TRUE("exact-key take returns first compilation", taken_a != nil && (__bridge void *)taken_a == (__bridge void *)expected_a);
-    EXPECT_EQ("taking completed result releases its slot", -1, queue_index(&a));
-    EXPECT_EQ("other worker remains active in its slot", 1, queue_active_count());
-
-    [dev releaseThrough:2];
-    EXPECT_TRUE("second worker completes", pending_done(&b, 5000));
-    TestPipelineState *expected_b = [dev resultForCall:2];
-    id<MTLRenderPipelineState> taken_b = pso_pend_take(&b);
-    EXPECT_TRUE("second exact-key take returns its own result", taken_b != nil && (__bridge void *)taken_b == (__bridge void *)expected_b);
-    EXPECT_EQ("both take operations leave no active workers", 0, queue_active_count());
+    for (int i = 0; i < PSO_PEND_ACTIVE; i++) {
+        [dev releaseThrough:i + 1];
+        EXPECT_TRUE("worker completes", pending_done(&keys[i], 5000));
+        TestPipelineState *expected = [dev resultForCall:i + 1];
+        id<MTLRenderPipelineState> taken = pso_pend_take(&keys[i]);
+        EXPECT_TRUE("exact-key take returns its own result", taken != nil && (__bridge void *)taken == (__bridge void *)expected);
+        EXPECT_EQ("taking completed result releases its slot", -1, queue_index(&keys[i]));
+        EXPECT_EQ("remaining workers stay active in their slots", PSO_PEND_ACTIVE - 1 - i, queue_active_count());
+    }
     reset_queue();
 }
 

@@ -219,7 +219,7 @@ static void prediction_standin(id<MTLLibrary> lib, id<MTLLibrary> other) {
     state_reset(); S.prog = &pg; memset(&g_pass, 0, sizeof g_pass); g_pass.cfmt[0] = 70; g_pass.dfmt = g_pass.sfmt = 260; g_pass.samples = 1;
     pso_key k, alt; pso_key_fill(&k, p->sh[0], p->sh[1], g_pass.cfmt, 260, 260, 1, 0); pso_key_fill(&alt, p->sh[0], p->sh[1], g_pass.cfmt, 0, 0, 1, 0);
     NvProg *q = program(other); pso_key ko; pso_key_fill(&ko, q->sh[0], q->sh[1], g_pass.cfmt, 260, 260, 1, 0);
-    NSError *error = nil; id<MTLRenderPipelineState> stand = pso_build(pso_desc(&ko, q->sh[0], q->sh[1], nil, 0), !ko.border, &error);   // any pipeline: only its presence counts
+    NSError *error = nil; id<MTLRenderPipelineState> stand = pso_build(pso_desc(&ko, q->sh[0], q->sh[1], nil, 0), &error);   // any pipeline: only its presence counts
     CHECK(stand != nil, "a stand-in pipeline builds"); if (!stand) return;
     hm_put_id(&g_pso_hy, &k, stand);
     uint8_t commands[1024] = {0}; p_draw draw = {.prim = NVN_DRAW_PRIMITIVE_TRIANGLES, .count = 3};

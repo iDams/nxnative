@@ -69,8 +69,26 @@ static unsigned run_(prog_t *pg, uint8_t *pool, int overlap, int opener, uint64_
     return pixels[((PIXELS / 2) * PIXELS + PIXELS / 2) * 4];
 }
 
+// A draw's storage writes and the conversions (ixc_writes_spare): an indirect mesh draw whose mesh stage adds to a counter in a bound storage buffer
+static void writes_spare(void) {
+    NvProg *pr = [NvProg new]; NvShader *ms = [NvShader new]; pr->sh[4] = ms;
+    ms->rf.nb = 1; ms->rf.b[0] = (nvn_rbind){.kind = NVN_RB_SBUFP, .rw = 1, .reg = 3};
+    state_reset();
+    S.ssbo[4][3] = (p_bind_buf){.addr = 0x10000, .size = 64};
+    g_ixc_n = 1; g_ixc[0] = (ixc_ent){.ind = 0x20000, .prim = DM_PRIM_MESH_TASKS, .itype = -1};
+    CHECK(ixc_writes_spare(pr), "a storage buffer away from the records leaves the conversions standing");
+    S.ssbo[4][3] = (p_bind_buf){.addr = 0x20000 - 32, .size = 40};
+    CHECK(!ixc_writes_spare(pr), "a storage buffer over a record drops them");
+    S.ssbo[4][3] = (p_bind_buf){.addr = 0x10000, .size = 64}; ms->rf.b[0].kind = NVN_RB_GMEM;
+    CHECK(!ixc_writes_spare(pr), "a raw-memory write drops them");
+    ms->rf.b[0].kind = NVN_RB_SBUFP; g_ixc_n = 2; g_ixc[1] = (ixc_ent){.ind = 0x30000, .ibuf = 0x40000, .prim = 4, .itype = 0};
+    CHECK(!ixc_writes_spare(pr), "an indexed expansion among the conversions drops them");
+    g_ixc_n = 0; state_reset();
+}
+
 int main(void) { @autoreleasepool {
     mtl_init();
+    writes_spare();
     NSError *err = nil;
     id<MTLLibrary> lib = [g_dev newLibraryWithSource:@"#include <metal_stdlib>\nusing namespace metal;\n"
                                                       "vertex float4 v(uint i [[vertex_id]]){const float2 p[4]={float2(-1,-1),float2(1,-1),float2(1,1),float2(-1,1)};return float4(p[i%4],0,1);}\n"

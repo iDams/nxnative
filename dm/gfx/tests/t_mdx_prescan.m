@@ -40,7 +40,7 @@ static int run(const char *name, uint8_t *pool, prog_t *green, prog_t *red, int 
     if (barrier) h_nvnCommandBufferBarrier(&cb, NVN_BARRIER_ORDER_INDIRECT_DATA_BIT);
     h_nvnCommandBufferBindProgram(&cb, (const NVNprogram *)red, 3);
     h_nvnCommandBufferMultiDrawArraysIndirectCount(&cb, NVN_DRAW_PRIMITIVE_TRIANGLES, base + 256, base, MAXD, STRIDE);
-    uint64_t handle = (uintptr_t)nvn_rec_linear(h_nvnCommandBufferEndRecording(&cb), NULL);
+    uint64_t handle = h_nvnCommandBufferEndRecording(&cb);
 
     tex_t rt = {.magic = MAGIC('T', 'E', 'X', 0), .serial = nvn_new_serial()};
     rt.d = (nvn_texdesc){.target = NVN_TEXTURE_TARGET_2D, .format = NVN_FORMAT_RGBA8, .width = PIXELS, .height = PIXELS, .depth = 1, .levels = 1, .samples = 1};
@@ -64,7 +64,6 @@ static int run(const char *name, uint8_t *pool, prog_t *green, prog_t *red, int 
     mtl_sub_index(&handle, 1);
     mtl_exec((const uint8_t *)(uintptr_t)handle);
     int done = mtl_wait(mtl_sub_commit(), 10000000000ull) && !mtl_last_commit_error();
-    free((void *)(uintptr_t)handle);   // the linear copy (nvn_rec_linear); the replay is done with it
     [out getBytes:pixels bytesPerRow:PIXELS * 4 fromRegion:MTLRegionMake2D(0, 0, PIXELS, PIXELS) mipmapLevel:0];
     const uint8_t *c = &pixels[((PIXELS / 2) * PIXELS + PIXELS / 2) * 4];
     int red_px = c[0] == 255 && c[1] == 0, green_px = c[0] == 0 && c[1] == 255;
