@@ -85,6 +85,7 @@ typedef struct {
     size_t ctl_size;                     // Bytes in the last control memory block supplied by the game (the host records no control commands)
     int64_t copy_row, copy_image;        // SetCopyRowStride / SetCopyImageStride: state of the command buffer, written into each buffer <-> texture copy (p_copy_strides), not recorded
     size_t cmd_size;                     // GetCommandMemorySize: the bytes the game last passed to AddCommandMemory, as in NVN; a host-lent segment leaves it (see there)
+    uint64_t rec_id;                     // The current or last recording's serial (hle_nvn.c BeginRecording): its own host-lent segments are not freed by its own writes (hostseg_written)
 } cmd_t;                                                                                   FITS(cmd_t, NVNcommandBuffer);
 
 // ---------- State objects (defaults follow the NVN / GL defaults) ----------
