@@ -315,6 +315,13 @@ static int guest_name(const char *parent, const char *physical, char *out, size_
     if (errno != ENOATTR) return 0;
     strlcpy(out, physical, n); return 1;
 }
+// The next entry of a directory, without . and ..: NULL at its end with errno 0, NULL with errno set when reading failed. readdir answers both with NULL and only errno tells them apart:
+// a failure read as the end gave a short listing, which a name index kept for the whole run (each later open of a name after it not found) and a clean reported as done
+static struct dirent *dir_next(DIR *d) {
+    struct dirent *e;
+    do { errno = 0; e = readdir(d); } while (e && (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")));
+    return e;
+}
 // Name index of the directories of read-only mounts (RomFS, a save that fell back to read-only): guest name → physical name, sorted by guest name. The mount table is resident and a read-only mount does not change for the whole process,
 // so each directory's index is built once at its first lookup and stays valid. The entry-by-entry comparison below calls getxattr on every entry of the parent directory for each path component:
 // Engage's voice bank directories have 38,000 entries, and walking the whole RomFS at boot (9,680 directories) took about 17 s of black screen on the Mac and longer on the phone;
@@ -325,7 +332,7 @@ typedef struct dir_index { struct dir_index *next; uint64_t hash; char *path; si
 static dir_index *g_dir_index[DIR_INDEX_SLOTS];
 static uint64_t fnv1a(const char *s) { uint64_t h = 1469598103934665603ull; while (*s) { h ^= (uint8_t)*s++; h *= 1099511628211ull; } return h; }
 static int name_ent_cmp(const void *a, const void *b) { return strcmp(((const name_ent *)a)->guest, ((const name_ent *)b)->guest); }
-// Returns NULL when it cannot be built (the directory cannot be opened, reading an entry's xattr fails); the caller then takes the original path
+// Returns NULL when it cannot be built (the directory cannot be opened or read, reading an entry's xattr fails), and nothing is kept: the caller then takes the original path, and the next lookup builds it again
 static const dir_index *dir_index_get(const char *dir) {
     uint64_t h = fnv1a(dir); dir_index **slot = &g_dir_index[h % DIR_INDEX_SLOTS];
     for (dir_index *x = *slot; x; x = x->next) if (x->hash == h && !strcmp(x->path, dir)) return x;
@@ -334,8 +341,7 @@ static const dir_index *dir_index_get(const char *dir) {
     size_t n = 0, cap = 64, plen = 0, pcap = 4096; size_t (*off)[2] = malloc(cap * sizeof *off); char *pool = malloc(pcap);
     if (!off || !pool) die("directory index allocation failed");
     struct dirent *e; char guest[0x301]; int ok = 1;
-    while ((e = readdir(d))) {
-        if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")) continue;
+    while ((e = dir_next(d))) {
         if (!guest_name(dir, e->d_name, guest, sizeof guest)) { ok = 0; break; }
         size_t gl = strlen(guest) + 1, same = !strcmp(guest, e->d_name), pl = same ? 0 : strlen(e->d_name) + 1;
         if (n == cap && !(off = realloc(off, (cap *= 2) * sizeof *off))) die("directory index allocation failed");
@@ -344,6 +350,7 @@ static const dir_index *dir_index_get(const char *dir) {
         off[n][1] = same ? off[n][0] : plen; if (!same) { memcpy(pool + plen, e->d_name, pl); plen += pl; }
         n++;
     }
+    if (!e && errno) ok = 0;
     closedir(d);
     if (!ok) { free(off); free(pool); return NULL; }
     dir_index *x = calloc(1, sizeof *x); if (!x || !(x->path = strdup(dir)) || !(x->e = malloc((n ? n : 1) * sizeof *x->e))) die("directory index allocation failed");
@@ -365,11 +372,11 @@ static int path_component(char *parent, size_t n, const char *name, int create, 
     }
     DIR *d = opendir(parent); if (!d) return 0;
     struct dirent *e; char physical[0x301] = "", guest[0x301];
-    while ((e = readdir(d))) {
-        if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")) continue;
+    while ((e = dir_next(d))) {
         if (!guest_name(parent, e->d_name, guest, sizeof guest)) { closedir(d); return 0; }
         if (!strcmp(guest, name)) { strlcpy(physical, e->d_name, sizeof physical); break; }
     }
+    if (!e && errno) { int err = errno; closedir(d); errno = err; return 0; }   // not "not found": the name may be in what was not read
     closedir(d);
     if (!physical[0]) {
         if (!create) { errno = ENOENT; return 0; }
@@ -845,6 +852,62 @@ HLE_FORCE("_ZN2nn2fs7UnmountEPKc", "fsp-srv; host mounts are permanent, a no-op,
 }
 
 // ---------- Files ----------
+// A RomFS image file named *.zs that does not begin with a zstd frame (or a skippable frame) cannot be decompressed. Such a file is served as the substitute the profile key
+// romfs_substitute names for it (<damaged path>=<substitute path> pairs, image paths without the mount; DM_ROMFS_SUBST replaces the profile's list), else answered "path not found", as a file
+// the dump lacks; one [RED] line names it. Ocarina of Time (Switch 2), the NUP at hand: Tex/CmnTex_Map_Soil_FairyFountain_Floor_D_Nrm.bntx.zs, Tex/Rock_WaterTemple_Gate_M_01_Nrm.bntx.zs and
+// Tex/RBake_Scene_GanonStage_G_2_1_d0_t0.bntx.zs begin with 12 KB of zeros (the container's SHA-256 of them matches: they were so when it was packed; whether a retail copy has them is not known). Served as stored, the fairy fountain model that uses
+// the first (Model/Land_FairyFountain_Base_A.Land_FairyFountain_Base_A_01.bfres) failed to load, and the OptimizeChangeBanc thread (main+0xf7a0) asked for it again about 22 times a second for
+// the whole session: its pass over the 852 entries of the area never ended "all done", so it never went back to its 16 ms sleep (one core, ~980 ms/s, on the Mac and the iPad), and a
+// ParallelDecompThread decompressed the 2.4 MB model each time (~750 ms/s). "Not found" fails the model the same way (the game then asks for the .bntx, also missing); the game's own 1x1 flat
+// normal map (Tex/Dummy_Flat_Normal_CmnTex_Chara_DetailMap_Nrm.bntx.zs) in its place loads the model once, and both threads go idle: Mac CPU 412% -> 180% (medians of 5-minute runs).
+// Checked once per entry, at its first open or entry type (4 bytes); DM_ROMFS_ZSTD_CHECK=0 serves such files as stored
+#define IMG_ENT_ZCHECKED 4   // in memory only: the zstd head check has run for this entry
+#define IMG_ENT_BADZSTD 8    // in memory only: ... and found no zstd frame at the start
+#ifndef DM_GAME_ROMFS_SUBST
+#define DM_GAME_ROMFS_SUBST ""
+#endif
+static int64_t img_subst(mount_t *m, const char *path, const char **donor, int *dlen) {   // the substitute entry for a damaged path (-1: none named, or not in the image)
+    const char *c = strchr(path, ':'), *rest = c ? c + 1 : path, *s = getenv("DM_ROMFS_SUBST");
+    while (*rest == '/') rest++;
+    if (!s) s = DM_GAME_ROMFS_SUBST;
+    size_t rl = strlen(rest);
+    while (*s) {
+        while (*s == ' ' || *s == '\t') s++;
+        const char *end = s + strcspn(s, " \t"), *eq = memchr(s, '=', (size_t)(end - s));
+        if (eq && (size_t)(eq - s) == rl && !memcmp(s, rest, rl)) {
+            char d[1024]; snprintf(d, sizeof d, "/%.*s", (int)(end - eq - 1), eq + 1);
+            if (donor) { *donor = eq + 1; *dlen = (int)(end - eq - 1); }
+            int64_t k = img_find(m->img, d);
+            return k > 0 && m->img->e[k].type ? k : -1;
+        }
+        s = end;
+    }
+    return -1;
+}
+// The entry to serve for entry k: k itself, a damaged file's substitute, or -1 (answered "not found")
+static int64_t img_serve(mount_t *m, int64_t k, const char *path) {
+    img_ent *ent = &m->img->e[k];
+    const char *nm = m->img->names + ent->name;
+    if (!ent->type || ent->nlen <= 3 || memcmp(nm + ent->nlen - 3, ".zs", 3)) return k;   // other files keep their flags as they are
+    uint8_t f = __atomic_load_n(&ent->flags, __ATOMIC_ACQUIRE);
+    if (f & IMG_ENT_ZCHECKED) return f & IMG_ENT_BADZSTD ? img_subst(m, path, NULL, NULL) : k;
+    static int on = -1; if (on < 0) { const char *e = getenv("DM_ROMFS_ZSTD_CHECK"); on = !(e && *e == '0'); }
+    int bad = 0; int64_t r = k;
+    if (on && ent->b >= 4) {
+        uint8_t h[4];
+        if (romfs_image_read(m->img->fd, h, 4, (off_t)ent->a)) {
+            uint32_t mg = (uint32_t)h[0] | (uint32_t)h[1] << 8 | (uint32_t)h[2] << 16 | (uint32_t)h[3] << 24;
+            bad = mg != 0xFD2FB528u && (mg & 0xFFFFFFF0u) != 0x184D2A50u;
+            if (bad) {
+                const char *d = NULL; int dl = 0; r = img_subst(m, path, &d, &dl);
+                if (r >= 0) LOG("[RED] fs %s is not a zstd stream (begins %02x %02x %02x %02x; damaged): served as %.*s (romfs_substitute)", path, h[0], h[1], h[2], h[3], dl, d);
+                else LOG("[RED] fs %s is not a zstd stream (begins %02x %02x %02x %02x; damaged): answered \"not found\"%s (DM_ROMFS_ZSTD_CHECK=0 serves it as stored)", path, h[0], h[1], h[2], h[3], d ? ", its substitute is not in the image" : "");
+            }
+        }
+    }
+    __atomic_fetch_or(&ent->flags, (uint8_t)(IMG_ENT_ZCHECKED | (bad ? IMG_ENT_BADZSTD : 0)), __ATOMIC_RELEASE);
+    return r;
+}
 HLE_FORCE("_ZN2nn2fs8OpenFileEPNS0_10FileHandleEPKci", "fsp-srv → open(2)", Result, h_fs_OpenFile, uint64_t *out, const char *path, int mode) { dm_thread_service_request();
     int mi; int64_t k;
     if (img_path(path, &mi, &k)) {
@@ -854,6 +917,7 @@ HLE_FORCE("_ZN2nn2fs8OpenFileEPNS0_10FileHandleEPKci", "fsp-srv → open(2)", Re
         img_ent *ent = &g_mnt[mi].img->e[k];   // a damaged file is named once, at its first open
         if ((ent->flags & IMG_ENT_DAMAGED) && !(__atomic_fetch_or(&ent->flags, IMG_ENT_REPORTED, __ATOMIC_RELAXED) & IMG_ENT_REPORTED))
             LOG("[RED] fs %s failed the NCA's hash check when it was extracted (a damaged NSP, --allow-damaged); its bytes may be wrong", path);
+        if ((k = img_serve(&g_mnt[mi], k, path)) < 0) return RES_PATH_NOT_FOUND;
         *out = FH_OUT(IMG_HANDLE(mi, k));
         if (g_flag.fs) LOG("fs open [%.2fs] %s mode=%d → image entry %lld", (now_ns() - g_t0_ns) / 1e9, path, mode, (long long)k);
         return RES_OK;
@@ -987,12 +1051,12 @@ static int rm_tree(const char *p) {
     if (!S_ISDIR(st.st_mode)) { errno = ENOTDIR; return -1; }   // a symlink to a directory is not entered: opendir would follow it and empty its target
     DIR *d = opendir(p); if (!d) return -1;
     struct dirent *e; char c[1024]; int rc = 0;
-    while ((e = readdir(d))) {
-        if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")) continue;
+    while ((e = dir_next(d))) {
         snprintf(c, sizeof c, "%s/%s", p, e->d_name);
         rc |= rm_entry(c);
     }
-    closedir(d);
+    int err = errno; closedir(d);
+    if (err) { errno = err; return -1; }
     return rc | rmdir(p);
 }
 HLE_FORCE("_ZN2nn2fs26DeleteDirectoryRecursivelyEPKc", "fsp-srv → recursive delete (only inside writable mounts)", Result, h_fs_DeleteDirRec, const char *path) { dm_thread_service_request();
@@ -1003,12 +1067,12 @@ HLE_FORCE("_ZN2nn2fs25CleanDirectoryRecursivelyEPKc", "fsp-srv → recursively d
     HP(path); RW();
     DIR *d = opendir(hp); if (!d) return err_res("cleandir", hp);
     struct dirent *e; char c[1024]; int rc = 0;
-    while ((e = readdir(d))) {
-        if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")) continue;
+    while ((e = dir_next(d))) {
         snprintf(c, sizeof c, "%s/%s", hp, e->d_name);
         rc |= rm_entry(c);
     }
-    closedir(d);
+    int err = errno; closedir(d);
+    if (err) { errno = err; return err_res("cleandir read", hp); }
     return rc ? err_res("cleandir", hp) : RES_OK;
 }
 // file data cache (a global read cache in the fs process): the host reads through the page cache and leaves the buffer unused
@@ -1043,22 +1107,41 @@ HLE_FORCE("_ZN2nn2fs10RenameFileEPKcS2_", "fsp-srv → rename(2)", Result, h_fs_
 HLE_FORCE("_ZN2nn2fs15RenameDirectoryEPKcS2_", "fsp-srv → rename(2) of a directory", Result, h_fs_RenameDir, const char *from, const char *to) { dm_thread_service_request(); return rename_entry(from, to); }
 HLE_FORCE("_ZN2nn2fs12GetEntryTypeEPNS0_18DirectoryEntryTypeEPKc", "fsp-srv → stat(2)", Result, h_fs_GetEntryType, int32_t *out, const char *path) { dm_thread_service_request();
     int mi; int64_t k;
-    if (img_path(path, &mi, &k)) { if (k < 0) return err_res("stat", path); *out = g_mnt[mi].img->e[k].type ? ENT_FILE : ENT_DIR; return RES_OK; }
+    if (img_path(path, &mi, &k)) { if (k < 0) return err_res("stat", path); if (img_serve(&g_mnt[mi], k, path) < 0) return RES_PATH_NOT_FOUND; *out = g_mnt[mi].img->e[k].type ? ENT_FILE : ENT_DIR; return RES_OK; }   // a damaged .zs without a substitute is "not found" here too (img_serve)
     HP(path); struct stat st;
     if (stat(hp, &st)) return err_res("stat", hp);
     *out = S_ISDIR(st.st_mode) ? ENT_DIR : ENT_FILE; return RES_OK;
 }
 
 // ---------- Directories ----------
-typedef struct { DIR *d; char path[1024]; DIR *od; char opath[1024]; DirectoryEntry *snap; int64_t nsnap, psnap; int mode; } dirh_t;
-static void dir_snapshot(dirh_t *h, const mount_t *m, const char *rest) {
+typedef struct { DIR *d; char path[1024]; DirectoryEntry *snap; int64_t nsnap, psnap; int mode; } dirh_t;
+typedef struct { const char *name; size_t at; } name_at;
+static int name_at_cmp(const void *a, const void *b) {
+    const name_at *x = a, *y = b; int c = strcmp(x->name, y->name);
+    return c ? c : (x->at > y->at) - (x->at < y->at);
+}
+// The first of each name in names[0..n), in the order they came (overlay folders, then the base); returns how many are left. One sort: a scan of the names so far
+// for each name was quadratic, 722 million comparisons and 3.6 s of OpenDirectory under the path lock for a folder of 38,000 entries (synthetic; Engage's voice bank folders are this size), with DM_ROMFS_OVERLAY set
+static size_t names_first(char (*names)[0x301], size_t n) {
+    name_at *by = malloc((n ? n : 1) * sizeof *by); uint8_t *again = calloc(n ? n : 1, 1);
+    if (!by || !again) die("rom overlay directory snapshot allocation failed");
+    for (size_t i = 0; i < n; i++) by[i] = (name_at){names[i], i};
+    qsort(by, n, sizeof *by, name_at_cmp);
+    for (size_t k = 1; k < n; k++) if (!strcmp(by[k].name, by[k - 1].name)) again[by[k].at] = 1;
+    size_t m = 0;
+    for (size_t i = 0; i < n; i++) if (!again[i]) { if (m != i) memcpy(names[m], names[i], sizeof names[0]); m++; }
+    free(again); free(by);
+    return m;
+}
+// 0, or -1 with errno set when a folder of the overlay cannot be read: nothing is kept
+static int dir_snapshot(dirh_t *h, const mount_t *m, const char *rest) {
     char fwd[1024]; rest = fwd_slashes(rest, fwd, sizeof fwd);
     char *roots = strdup(m->overlay);
     size_t cap = 2048; char (*names)[0x301] = malloc(cap * sizeof *names);
     const char **all = calloc(65, sizeof *all);
     char *parent = malloc(1024), *guest = malloc(0x301), *rel = malloc(2048), *resolved = malloc(1024);
     if (!roots || !names || !all || !parent || !guest || !rel || !resolved) die("rom overlay directory snapshot allocation failed");
-    size_t nn = 0; int nr = 0;
+    size_t nn = 0; int nr = 0, err = 0;
     all[nr++] = m->dir;
     char *save = NULL;
     for (char *root = strtok_r(roots, ":", &save); root && nr < 65; root = strtok_r(NULL, ":", &save)) all[nr++] = root;
@@ -1066,26 +1149,23 @@ static void dir_snapshot(dirh_t *h, const mount_t *m, const char *rest) {
         if (!root_path(all[ri], rest, parent, 1024)) continue;
         DIR *x = opendir(parent); if (!x) continue;   // an image base is no folder: its names are added below
         struct dirent *e;
-        while ((e = readdir(x))) {
-            if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")) continue;
+        while ((e = dir_next(x))) {
             if (!guest_name(parent, e->d_name, guest, 0x301)) continue;
-            int dup = 0; for (size_t j = 0; j < nn; j++) if (!strcmp(names[j], guest)) { dup = 1; break; }
-            if (dup) continue;
             if (nn == cap && !(names = realloc(names, (cap *= 2) * sizeof *names))) die("rom overlay directory snapshot allocation failed");
             strlcpy(names[nn++], guest, sizeof names[0]);
         }
-        closedir(x);
+        err = errno; closedir(x);
+        if (err) goto done;
     }
-    size_t nov = nn; int64_t dk = m->img ? img_find(m->img, rest) : -1;
-    if (dk >= 0 && !m->img->e[dk].type)   // the image's own entries of this directory, after the overlay folders' (only those can repeat a name)
+    int64_t dk = m->img ? img_find(m->img, rest) : -1;
+    if (dk >= 0 && !m->img->e[dk].type)   // the image's own entries of this directory, after the overlay folders'
         for (uint64_t j = 0; j < m->img->e[dk].b; j++) {
             const img_ent *c = &m->img->e[m->img->e[dk].a + j]; size_t l = c->nlen < 0x300 ? c->nlen : 0x300;
             memcpy(guest, m->img->names + c->name, l); guest[l] = 0;
-            int dup = 0; for (size_t i = 0; i < nov; i++) if (!strcmp(names[i], guest)) { dup = 1; break; }
-            if (dup) continue;
             if (nn == cap && !(names = realloc(names, (cap *= 2) * sizeof *names))) die("rom overlay directory snapshot allocation failed");
             strlcpy(names[nn++], guest, sizeof names[0]);
         }
+    nn = names_first(names, nn);
     h->snap = calloc(nn ? nn : 1, sizeof *h->snap); h->nsnap = (int64_t)nn;
     if (!h->snap) die("rom overlay directory snapshot allocation failed");
     for (size_t j = 0; j < nn; j++) {
@@ -1095,7 +1175,9 @@ static void dir_snapshot(dirh_t *h, const mount_t *m, const char *rest) {
         if (rom_overlay_path(m, rel, resolved, 1024)) { if (!stat(resolved, &st)) { h->snap[j].type = S_ISDIR(st.st_mode) ? ENT_DIR : ENT_FILE; h->snap[j].size = S_ISDIR(st.st_mode) ? 0 : st.st_size; } }
         else if (m->img && (k = img_find(m->img, rel)) >= 0) { h->snap[j].type = m->img->e[k].type ? ENT_FILE : ENT_DIR; h->snap[j].size = m->img->e[k].type ? (int64_t)m->img->e[k].b : 0; }
     }
+done:
     free(resolved); free(rel); free(guest); free(parent); free(all); free(names); free(roots);
+    errno = err; return err ? -1 : 0;
 }
 HLE_FORCE("_ZN2nn2fs13OpenDirectoryEPNS0_15DirectoryHandleEPKci", "fsp-srv → opendir(3)", Result, h_fs_OpenDirectory, uint64_t *out, const char *path, int mode) { dm_thread_service_request();
     int mi; int64_t k;
@@ -1119,7 +1201,8 @@ HLE_FORCE("_ZN2nn2fs13OpenDirectoryEPNS0_15DirectoryHandleEPKci", "fsp-srv → o
     h->d = d; strlcpy(h->path, hp, sizeof h->path); h->mode = mode;
     const char *c = strchr(path, ':');
     if (c) for (int i = 0; i < g_nmnt; i++) if (g_mnt[i].overlay[0] && mnt_is(&g_mnt[i], path, (size_t)(c - path))) {
-        dir_snapshot(h, &g_mnt[i], c + 1); break;
+        if (dir_snapshot(h, &g_mnt[i], c + 1)) { int err = errno; closedir(d); free(h); errno = err; return err_res("opendir", hp); }
+        break;
     }
     *out = (uint64_t)h; return RES_OK;
 }
@@ -1128,8 +1211,8 @@ HLE_FORCE("_ZN2nn2fs13ReadDirectoryEPlPNS0_14DirectoryEntryENS0_15DirectoryHandl
     PATH_LOCK(); dirh_t *h = (dirh_t *)hh; int64_t n = 0; struct dirent *e;
     if (h->snap) { while (n < max && h->psnap < h->nsnap) { DirectoryEntry *src = &h->snap[h->psnap++]; if (!(h->mode & (src->type == ENT_DIR ? DIRMODE_DIR : DIRMODE_FILE))) continue; ents[n++] = *src; } *count = n; return RES_OK; }
     int dfd = dirfd(h->d);
-    while (n < max && (e = readdir(h->d))) {
-        if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")) continue;
+    while (n < max) {
+        if (!(e = dir_next(h->d))) { if (errno) { *count = n; return err_res("readdir", h->path); } break; }
         // a directory's type comes from d_type without stat; files need a size, taken with fstatat relative to the directory fd (following links, like the old stat)
         struct stat st; int isdir;
         if (e->d_type == DT_DIR) isdir = 1;
@@ -1143,7 +1226,7 @@ HLE_FORCE("_ZN2nn2fs13ReadDirectoryEPlPNS0_14DirectoryEntryENS0_15DirectoryHandl
 }
 HLE_FORCE("_ZN2nn2fs14CloseDirectoryENS0_15DirectoryHandleE", "fsp-srv → closedir(3)", void, h_fs_CloseDirectory, uint64_t hh) { dm_thread_service_request();
     if (!hh) return;   // the game also closes after a failed open (handle 0): nothing to do in the original either
-    dirh_t *h = (dirh_t *)hh; if (h->d) closedir(h->d); if (h->od) closedir(h->od); free(h->snap); free(h);
+    dirh_t *h = (dirh_t *)hh; if (h->d) closedir(h->d); free(h->snap); free(h);
 }
 
 // ---------- Overloads from newer SDKs (SDK 16: MountRom without a cache, ReadFile without the bytes-read output / with read options, directory entry count) ----------
@@ -1171,13 +1254,14 @@ HLE_FORCE("_ZN2nn2fs22GetDirectoryEntryCountEPlNS0_15DirectoryHandleE", "fsp-srv
     if (h->snap) { for (int64_t i = 0; i < h->nsnap; i++) if (h->mode & (h->snap[i].type == ENT_DIR ? DIRMODE_DIR : DIRMODE_FILE)) n++; *out = n; return RES_OK; }
     DIR *d = opendir(h->path); if (!d) return err_res("opendir", h->path);
     struct dirent *e;
-    while ((e = readdir(d))) {
-        if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")) continue;
+    while ((e = dir_next(d))) {
         char c[1280]; snprintf(c, sizeof c, "%s/%s", h->path, e->d_name);
         struct stat st; if (stat(c, &st)) continue;
         if (h->mode & (S_ISDIR(st.st_mode) ? DIRMODE_DIR : DIRMODE_FILE)) n++;
     }
-    closedir(d); *out = n; return RES_OK;
+    int err = errno; closedir(d);
+    if (err) { errno = err; return err_res("readdir", h->path); }
+    *out = n; return RES_OK;
 }
 // Whether save data exists: the host's save directory is created at mount time, so from the game's point of view it always exists (EnsureSaveData always succeeds too)
 HLE_FORCE("_ZN2nn2fs18IsSaveDataExistingERKNS_7account3UidE", "fsp-srv; save data always exists (returns bool)", unsigned, h_fs_SaveExists, const void *uid) { (void)uid; return 1; }
