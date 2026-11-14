@@ -245,5 +245,15 @@ From an empty save: at about 45 s `A` (title), `A` (New Game), then the movie. F
   - On `21:9`, enabling FrameGen (`DM_FRAMEGEN=1`, `2125x976` via `FG_BUDGET`) added `10.75–11.54 ms` p50 GPU interpolation time on top of `~18.4–19.1 ms` game GPU time, overflowing the `33.3 ms` frame budget and causing frame drops (`14–15` drops/300 frames) and FrameGen pauses (`#1`/`#2`).
   - Disabling FrameGen (`DM_FRAMEGEN=0`) with `DM_FPS_TARGET=30`, `DM_DYNAMIC_RESOLUTION=1`, `DM_UPSCALER=metalfx`, `DM_THERMAL_CAP=0`, `DM_QOS_MAP=1`, `DM_QOS_EDGES=45,59` restores locked **30.0 FPS** (`0` dropped / `0` discarded across 1,200 consecutive frames `f1201–f2400`, `p99 33.34 ms`, `CPU 0.37–1.30 W`, `wakeups 685–840/s`, `thermal 0`, `brightness 0.55`).
 
+## iOS Controller Gear Auto-Hide & Cleaned `env.txt` (`v1.2-oot-wideview-stable`, 2026-11-13)
+
+- **Settings Button Auto-Hide with Physical Controller (`dm/ios/Sources/DmGamepad.m`):**
+  - Connecting any physical `GCController` (`_padOff == YES`) hides the top-center `DmMenuButton` gear alongside the virtual controls (`padsChanged:`).
+  - Touching the screen (`touchesBegan:`) or tapping the fading gear (`UIControlEventTouchDown`) reveals it via `peekMenu` and auto-hides it after `4 s` (`K_MENU_PEEK_S = 4`, rescheduled on release in `endTouches:`), staying visible while its `UIMenu` is open (`willDisplayMenuForConfiguration:` / `willEndForConfiguration:`) and permanently while no physical controller is connected.
+- **Cleaned `Documents/env.txt` (`iPhone Dams`):**
+  - Removed redundant `DM_FRAMEGEN_MV=1` (`nvn_mtl.m` already enables it by default) and `DM_QOS_EDGES=45,59` (`hle_thread.c` already defaults to `44,59`, covering OoT's `main thread` and `BaseProcExecutor` at priority `44`).
+  - Left `DM_FPS_TARGET` (`60` default in `game.tsv`) and `DM_FRAMEGEN` (`off` default) unlocked in `Documents/env.txt` so `60` / `30 FPS` and FrameGen remain selectable from the Launcher UI, keeping only `DM_DYNAMIC_RESOLUTION=1`, `DM_UPSCALER=metalfx`, `DM_THERMAL_CAP=0`, and `DM_QOS_MAP=1`.
+
+
 
 

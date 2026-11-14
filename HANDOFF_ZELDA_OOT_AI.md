@@ -7,11 +7,12 @@
 ---
 
 > [!IMPORTANT]
-> **VERSIÓN ESTABLE ACTUAL (`v1.1-oot-wideview-stable` — 2026-11-13):**
-> * **Tag Git en `/Users/marco/ns` (`origin`):** `v1.1-oot-wideview-stable` (`main` y rama `stable/oot-wideview`; respaldo histórico `16:9` intacto en `v1.0-oot-30fps-stable` / `stable/oot-30fps` `d0a4b0e3`).
+> **VERSIÓN ESTABLE ACTUAL (`v1.2-oot-wideview-stable` — 2026-11-13):**
+> * **Tag Git en `/Users/marco/ns` (`origin`):** `v1.2-oot-wideview-stable` (`main` y rama `stable/oot-wideview`; hitos anteriores intactos en `v1.1-oot-wideview-stable` y respaldo `16:9` `v1.0-oot-30fps-stable` / `stable/oot-30fps` `d0a4b0e3`).
 > * **Cadena de Shaders:** `39417042cfe8` (`/Users/marco/Ocarina/shader/ios/b-39417042cfe8.img`, 5.4 GB, 42,848 shaders, `inputs 4bd48f723876`).
-> * **Modo de Pantalla y Ajuste Verificado (`iPhone Dams`):** Hor+ Wide View `21:9` (`2352x1080`, `DM_WIDE_VIEW=1` activo por defecto) + **`DM_FPS_TARGET=30`, `DM_FRAMEGEN=0`, `DM_DYNAMIC_RESOLUTION=1`, `DM_UPSCALER=metalfx`**.
-> * **Rendimiento Medido (`iPhone Dams`):** **30.0 FPS estables clavados** (`0` cuadros caídos/descartados en `1,200` frames consecutivos `f1201–f2400`, `frame time p50 = 33.33–33.39 ms`, `p99 = 33.34 ms`, consumo CPU `0.37–1.30 W`, `wakeups 685–840/s`, `thermal 0`, `brightness 0.55`).
+> * **Modo de Pantalla y Ajuste (`iPhone Dams`):** Hor+ Wide View `21:9` (`2352x1080`, `DM_WIDE_VIEW=1` activo por defecto) + `Documents/env.txt` limpio (`DM_DYNAMIC_RESOLUTION=1`, `DM_UPSCALER=metalfx`, `DM_THERMAL_CAP=0`, `DM_QOS_MAP=1`), con **`DM_FPS_TARGET` (default `60` en `game.tsv`) y `DM_FRAMEGEN` (default `off`) desbloqueados** en el Launcher para probar `60 FPS` o fijar `30 FPS`.
+> * **Rendimiento Medido (`iPhone Dams`):** En ajuste `30 FPS` (`DM_FRAMEGEN=0`): **30.0 FPS estables clavados** (`0` cuadros caídos/descartados en `1,200` frames consecutivos `f1201–f2400`, `frame time p50 = 33.33–33.39 ms`, `p99 = 33.34 ms`, consumo CPU `0.37–1.30 W`, `wakeups 685–840/s`, `thermal 0`, `brightness 0.55`).
+> * **Controles Físicos (`DmGamepad.m`):** Al conectar cualquier control físico (`Xbox`, `PlayStation`, etc.), el botón de ajustes (engrane superior central) se oculta junto al gamepad virtual y reaparece `4 s` al tocar la pantalla.
 > * **Estado Gráfico:** Hierba, follaje, sombras, geometría 3D en `21:9`, menús a pantalla completa y minimapa/HUD centrados completamente estables.
 > * **Cómo volver a una versión estable si un experimento futuro falla:** Ver [Sección 8 (Restauración Rápida a la Versión Estable)](#8-restauración-rápida-a-la-versión-estable-rollback).
 
@@ -21,7 +22,7 @@
 
 | Repositorio / Fuente | URL Remota | Rama / Tag Estable | Rol |
 | :--- | :--- | :--- | :--- |
-| **nxnative (Fork Privado)** | `https://github.com/iDams/nxnative.git` | `main` / Tag: **`v1.1-oot-wideview-stable`** / Rama: **`stable/oot-wideview`** (fallback `16:9`: `v1.0-oot-30fps-stable` / `stable/oot-30fps`) | Motor nativo de recompilación para Switch / Switch 2 en Apple Silicon / iOS. Clonado local en `/Users/marco/ns`. |
+| **nxnative (Fork Privado)** | `https://github.com/iDams/nxnative.git` | `main` / Tag: **`v1.2-oot-wideview-stable`** / Rama: **`stable/oot-wideview`** (fallback `16:9`: `v1.0-oot-30fps-stable` / `stable/oot-30fps`) | Motor nativo de recompilación para Switch / Switch 2 en Apple Silicon / iOS. Clonado local en `/Users/marco/ns`. |
 | **nxnative (Upstream)** | `https://github.com/seedds/nxnative.git` | `main` (incluye [PR #1852](https://github.com/seedds/nxnative/pull/1852)) | Repositorio upstream original del motor `dm` (revisar PRs de rendimiento, Metal 4 y `0400486024DEC000`). |
 | **kid-with-sword-remake (cheemu21)** | `https://github.com/cheemu21/kid-with-sword-remake/releases` | Releases (`v22+`) | Builds y parches comunitarios específicos para *Zelda: Ocarina of Time* (Switch 2). Revisar periódicamente sus notas de release y commits embebidos para nuevas optimizaciones de OoT. |
 | **NX2Apple (Frontend & Perfiles)** | `https://github.com/LNPANDY/NX2Apple` | `main` | Frontend comunitario y parches iOS sobre `nxnative`. |
@@ -79,26 +80,24 @@
 ### C. Almacenamiento en el Dispositivo (iPhone Dams `00008150-00190C880E3B401C`)
 * **`Documents/RomFS.img` (24.44 GB)**: Sistema de archivos del juego. **NUNCA BORRAR NI SOBREESCRIBIR.**
 * **`Documents/save/`**: Partidas guardadas del usuario. **NUNCA BORRAR.**
-* **`Documents/env.txt`**: Configuración activa de rendimiento a 30 FPS.
+* **`Documents/env.txt`**: Variables fijas limpias (`DM_DYNAMIC_RESOLUTION=1`, `DM_UPSCALER=metalfx`, `DM_THERMAL_CAP=0`, `DM_QOS_MAP=1`); `DM_FPS_TARGET` y `DM_FRAMEGEN` quedan desbloqueados para elegirlos en el Launcher.
 
 ---
 
-## 5. Configuración Estable de `Documents/env.txt` en el iPhone
+## 5. Configuración Activa de `Documents/env.txt` en el iPhone
 
 ```ini
-DM_FPS_TARGET=30
-DM_FRAMEGEN=0
-DM_FRAMEGEN_MV=1
 DM_DYNAMIC_RESOLUTION=1
 DM_UPSCALER=metalfx
 DM_THERMAL_CAP=0
 DM_QOS_MAP=1
-DM_QOS_EDGES=45,59
 ```
 
 > [!NOTE]
+> * **`DM_FPS_TARGET` y `DM_FRAMEGEN` no se fijan aquí** para que sigan desbloqueados en la interfaz del Launcher (`game.tsv` deja `fps_target 60` y `framegen` apagado por defecto). Si se busca estabilidad total `0` caídas en `21:9`, seleccionar `30` FPS en el Launcher (`DM_FRAMEGEN` apagado).
+> * **Variables retiradas por redundantes:** `DM_FRAMEGEN_MV=1` (`nvn_mtl.m` ya la activa por defecto si `DM_FRAMEGEN=1`) y `DM_QOS_EDGES=45,59` (`hle_thread.c` ya usa `44,59` por defecto, cubriendo prioridad `44` de OoT).
+> * **`DM_THERMAL_CAP=0`** desactiva el recorte automático a `30 FPS` en estado térmico `>= 2` (`hle_nvn.c`); retirarla si se prefiere protección térmica automática en sesiones largas a `60 FPS`.
 > * **`DM_WIDE_VIEW=1`** queda activo por defecto desde el launcher (`dm/games/settings.tsv`); si se añade `DM_LAUNCHER=0` en `Documents/env.txt`, incluir también `DM_WIDE_VIEW=1` explícitamente para que `LauncherModel.applySaved()` no vuelva a `16:9` (además de `DM_OPMODE=0` y `DM_SHOW_FPS=1` si se desean fijar).
-> * **`DM_FRAMEGEN=0`** se fija explícitamente porque en `21:9` la interpolación (`~10.75–11.54 ms` GPU extra) excede el margen de `33.3 ms` y provoca caídas/pausas; con `DM_FRAMEGEN=0` sostiene `30.0 FPS` (`0` caídas) y `thermal 0`.
 
 ---
 
@@ -146,11 +145,11 @@ xcrun devicectl device process launch \
 Si en el futuro se realizan experimentos en `/Users/marco/ns` y el rendimiento o los gráficos fallan, ejecuta estos comandos exactos para volver a esta versión estable probada:
 
 ```bash
-# 1. Restaurar el código del motor al tag estable actual v1.1-oot-wideview-stable
-#    (o usar v1.0-oot-30fps-stable para volver al baseline anterior 16:9)
+# 1. Restaurar el código del motor al tag estable actual v1.2-oot-wideview-stable
+#    (o usar v1.1-oot-wideview-stable / v1.0-oot-30fps-stable para volver a hitos previos)
 cd /Users/marco/ns
-git checkout v1.1-oot-wideview-stable
-# (O para resetear main a la versión estable: git checkout main && git reset --hard v1.1-oot-wideview-stable)
+git checkout v1.2-oot-wideview-stable
+# (O para resetear main a la versión estable: git checkout main && git reset --hard v1.2-oot-wideview-stable)
 
 # 2. Recompilar, verificar firma, instalar encima y lanzar en el iPhone Dams
 xcodebuild -project /Users/marco/Ocarina/xcode/DmIOS.xcodeproj \
@@ -336,6 +335,20 @@ xcrun devicectl device process launch \
   * Medido en vivo en `iPhone Dams` en `21:9` (`1568x720 → 2352x1080` hasta `1046x480 → 2352x1080` con MetalFX spatial scaler HDR `0.7–1.1 ms`):
   * **4 ventanas consecutivas (`f1201–f2400`, 1,200 cuadros):** **30.0 FPS clavados**, **`dropped 0 (discarded 0)`**, `frame time p50 33.33–33.39 ms` / `p99 33.34 ms`, `CPU 0.37–1.30 W`, `wakeups 685–840/s`, `thermal 0`, `brightness 0.55` estables.
   * Validado por el usuario en dispositivo y promovido como versión estable (`v1.1-oot-wideview-stable`).
+
+---
+
+## 15. Auto-ocultado del Botón de Ajustes con Control Físico y Limpieza de Configs (`v1.2-oot-wideview-stable`) (2026-11-13)
+
+* **`dm/ios/Sources/DmGamepad.m`:**
+  * Cuando cualquier control físico (`GCController`) se conecta (`_padOff == YES` en `padsChanged:`), el botón superior de ajustes (`DmMenuButton *_menu`) se oculta (`fade` de `0.25 s` + `hidden = YES`) junto con `_controls`.
+  * Al tocar la pantalla (`touchesBegan:`) o el propio botón mientras se desvanece (`UIControlEventTouchDown`), `_menu` reaparece (`peekMenu`) durante `4 s` (`K_MENU_PEEK_S = 4`, refrescado al soltar en `endTouches:`).
+  * `DmMenuButton` mantiene `_menu` visible mientras su `UIMenu` está abierto (`willDisplayMenuForConfiguration:` / `willEndForConfiguration:`), y vuelve a mostrarse de forma permanente si se desconectan todos los controles físicos (`!any`).
+* **Auditoría y limpieza de configuración en `iPhone Dams` (`Documents/env.txt`):**
+  * Eliminadas `DM_FRAMEGEN_MV=1` (por defecto activada en `nvn_mtl.m`) y `DM_QOS_EDGES=45,59` (el defecto `44,59` en `hle_thread.c` ya cubre `main thread` / `BaseProcExecutor` de OoT en `44`).
+  * Desbloqueadas `DM_FPS_TARGET` y `DM_FRAMEGEN` (quitadas de `env.txt`) para poder elegir `60` / `30 FPS` y FrameGen desde el Launcher (`game.tsv` deja `60 FPS` por defecto).
+  * Conservadas `DM_DYNAMIC_RESOLUTION=1`, `DM_UPSCALER=metalfx`, `DM_THERMAL_CAP=0` y `DM_QOS_MAP=1` (esta última opcional para ahorro energético en hilos secundarios).
+
 
 
 
