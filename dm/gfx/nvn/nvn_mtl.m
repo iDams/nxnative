@@ -10074,7 +10074,8 @@ static uint64_t g_stat_pool_why[5];   // why a table was built whole: no table o
 // [2] resized, [3] a change without a note, [4] a new submission over more than POOL_IDS_MAX retired IDs. pchg / schg: of those patched or kept, the ones over memory pool changes
 // and over a new submission
 static uint64_t g_stat_pool_patched, g_stat_pool_kept, g_stat_pool_nopatch[5], g_stat_pool_pchg, g_stat_pool_schg;
-void mtl_pool_stats(uint64_t s[6]) { s[0] = g_stat_pool_builds; s[1] = (uint64_t)(g_stat_pool_ms * 1000); s[2] = g_stat_pool_patched; s[3] = g_stat_pool_kept; s[4] = g_stat_pool_pchg; s[5] = g_stat_pool_schg; }   // the power line's pool table counts (hle_nvn.c)
+static uint64_t g_pool_made, g_pool_reused;
+void mtl_pool_stats(uint64_t s[8]) { s[0] = g_stat_pool_builds; s[1] = (uint64_t)(g_stat_pool_ms * 1000); s[2] = g_stat_pool_patched; s[3] = g_stat_pool_kept; s[4] = g_stat_pool_pchg; s[5] = g_stat_pool_schg; s[6] = g_pool_made; s[7] = g_pool_reused; }   // the power line's pool table counts (hle_nvn.c)
 static void ids_push(pool_ids *l, int id_) {   // past POOL_IDS_MAX the list is dropped (n -1)
     if (l->n < 0) return;
     if (l->n == POOL_IDS_MAX) { free(l->v); *l = (pool_ids){NULL, -1, 0}; return; }
@@ -10353,7 +10354,7 @@ static void pool_seen_scan(void) {
 // A table replaced by a new walk is reused once the submission that may read it has completed, the last segment's fence covering every segment before it: a new buffer each time meant an allocation, a residency add and remove, and a kernel call or more each way,
 // about 3 a frame in Ocarina of Time. Sizes round up to 64 KB, as a pool grows by a few IDs at a time. What cannot be used again soon leaves when the spares are full (the idea is from PR 1428)
 enum { POOL_SPARES = 64 };
-static struct { __strong id<MTLBuffer> buf; uint64_t fence; } g_pool_spare[POOL_SPARES]; static int g_npool_spare; static uint64_t g_pool_made, g_pool_reused;
+static struct { __strong id<MTLBuffer> buf; uint64_t fence; } g_pool_spare[POOL_SPARES]; static int g_npool_spare;
 static id<MTLBuffer> pool_table_take(size_t need) {
     size_t len = (need + 0xffff) & ~(size_t)0xffff; uint64_t done = g_done;
     for (int i = 0; i < g_npool_spare; i++) if (g_pool_spare[i].fence <= done && g_pool_spare[i].buf.length == len) {
@@ -15206,7 +15207,7 @@ static int bc_alias_copy(const p_copy_t2t *c, id<MTLTexture> s, unsigned sl, uns
     return 1;
 }
 // GPU: texture -> texture (previously mislisted as a no-op, 3 times per frame on the character select page). Same size, not mirrored, same format -> blit layer by layer; the other semantics (scaling with filtering, mirroring, format change) cannot be expressed by blit: report a failure, to be implemented
-static void copy_t2t_enc(const p_copy_t2t *c) {
+static id<MTLTexture> copy_t2t_enc(const p_copy_t2t *c) {
     if (c->src) xv_check(c->src->serial, c->has_sv && c->sv.set_levels ? c->sv.base_level : 0, c->has_sv && c->sv.set_layers ? c->sv.min_layer : 0, "texture copy source");
     rp_flush();   // Land the pending pure-clear render pass first (zero-source candidates only enter the set when the render pass ends); the blit() below would end the render pass anyway
     if (c->dst) zskip_del(c->dst->serial);
@@ -15218,29 +15219,29 @@ static void copy_t2t_enc(const p_copy_t2t *c) {
     }
     id<MTLTexture> s = tex_mtl(c->src);
     PD("T src=%llu dst=%llu %dx%dx%d→%dx%dx%d flags=%#x", c->src->serial, c->dst->serial, c->sr.width, c->sr.height, c->sr.depth, c->dr.width, c->dr.height, c->dr.depth, c->flags);
-    if (!s || !c->dst) return;
+    if (!s || !c->dst) return nil;
     unsigned sl = c->has_sv && c->sv.set_levels ? c->sv.base_level : 0, dl = c->has_dv && c->dv.set_levels ? c->dv.base_level : 0;
     unsigned sz0 = c->has_sv && c->sv.set_layers ? c->sv.min_layer : 0, dz0 = c->has_dv && c->dv.set_layers ? c->dv.min_layer : 0;
-    if (!tex_level_ok(s, sl, "texture copy source")) return;
-    if (bc_alias_copy(c, s, sl, sz0, dl, dz0)) return;   // the destination aliases a compressed texture: the bytes go there, and the alias's own texture is not made (see bc_alias_copy)
+    if (!tex_level_ok(s, sl, "texture copy source")) return nil;
+    if (bc_alias_copy(c, s, sl, sz0, dl, dz0)) return nil;   // the destination aliases a compressed texture: the bytes go there, and the alias's own texture is not made (see bc_alias_copy)
     id<MTLTexture> d = tex_mtl(c->dst); sparse_gpu_wrote(c->dst);
-    if (!d || !tex_level_ok(d, dl, "texture copy destination")) return;
+    if (!d || !tex_level_ok(d, dl, "texture copy destination")) return nil;
     if (c->flags & DM_COPY_RESOLVE) {   // Downsample: multisample resolve into the single-sample destination (depth takes sample 0); with equal sample counts it is a plain whole copy
         if (s.sampleCount == d.sampleCount && s.pixelFormat == d.pixelFormat && s.width == d.width && s.height == d.height) {
             enc_b_copy_texture(blit(), s, sz0, sl, MTLOriginMake(0, 0, 0), MTLSizeMake(s.width, s.height, 1), d, dz0, dl, MTLOriginMake(0, 0, 0));
-            return;
+            return d;
         }
         // A single-sample source: a filtered scale of the whole level into the destination, converting the format (Bayonetta 2, SDK 3.6: 320x176 → 80x48 RGBA8 every frame, a quarter of
         // its 1280x720 frame and a quarter of that, rounded up to 16; and its 1280x720 BGRA8 frame into an RGBA8 texture of the same size), drawn as a scaling copy with bilinear filtering
         if (s.sampleCount == 1 && d.sampleCount == 1 && c->src->d.target != 2 && c->dst->d.target != 2) {
             if (!(d.usage & MTLTextureUsageRenderTarget) && !mtl_fmt_block(d.pixelFormat) && !fmt_int_or_ds(d.pixelFormat)) d = tex_upgrade(c->dst, d, MTLTextureUsageRenderTarget, d.pixelFormat);
             NVNcopyRegion sr = {0, 0, 0, (int)MAX(s.width >> sl, 1u), (int)MAX(s.height >> sl, 1u), 1}, dr = {0, 0, 0, (int)MAX(d.width >> dl, 1u), (int)MAX(d.height >> dl, 1u), 1};
-            if (copy_t2t_draw(s, d, sl, sz0, dl, dz0, &sr, &dr, !fmt_int_or_ds(s.pixelFormat), 0)) return;
+            if (copy_t2t_draw(s, d, sl, sz0, dl, dz0, &sr, &dr, !fmt_int_or_ds(s.pixelFormat), 0)) return d;
         }
         if (s.sampleCount <= 1 || d.sampleCount != 1 || s.pixelFormat != d.pixelFormat || s.width != d.width || s.height != d.height) {
             RED_ONCE(72, "Downsample case not implemented: %lux%lu %lu samples format %lu → %lux%lu %lu samples format %lu", (unsigned long)s.width, (unsigned long)s.height, (unsigned long)s.sampleCount,
                      (unsigned long)s.pixelFormat, (unsigned long)d.width, (unsigned long)d.height, (unsigned long)d.sampleCount, (unsigned long)d.pixelFormat);
-            return;
+            return nil;
         }
         rp_end(); if (g_blit) { enc_b_end(g_blit); g_blit = nil; }
         MTL4RenderPassDescriptor *rp = [MTL4RenderPassDescriptor new];
@@ -15251,7 +15252,7 @@ static void copy_t2t_enc(const p_copy_t2t *c) {
         a.loadAction = MTLLoadActionLoad; a.storeAction = MTLStoreActionStoreAndMultisampleResolve;
         if (depth) rp.depthAttachment.depthResolveFilter = MTLMultisampleDepthResolveFilterSample0;
         ser_gate(); enc_r_end(enc_r_begin(rp));
-        return;
+        return d;
     }
     PD("t src=%llu lv%u sl%u xyz=%d,%d,%d dst=%llu lv%u sl%u xyz=%d,%d,%d size=%d,%d,%d", c->src->serial, sl, sz0, c->sr.xoffset, c->sr.yoffset, c->sr.zoffset,
        c->dst->serial, dl, dz0, c->dr.xoffset, c->dr.yoffset, c->dr.zoffset, c->sr.width, c->sr.height, c->sr.depth);
@@ -15271,7 +15272,7 @@ static void copy_t2t_enc(const p_copy_t2t *c) {
         && !(c->flags & ~(NVN_COPY_FLAGS_ENGINE_2D_BIT | NVN_COPY_FLAGS_LINEAR_FILTER_BIT | NVN_COPY_FLAGS_MIRROR_X_BIT | NVN_COPY_FLAGS_MIRROR_Y_BIT))
         && copy_t2t_draw(s, d, sl, sz0, dl, dz0, &c->sr, &c->dr, !!(c->flags & NVN_COPY_FLAGS_LINEAR_FILTER_BIT), c->flags)) {   // format change / scaling / mirroring: draw it (see copy_t2t_draw)
         if (rb) mirror_readback(c->dst, d, dl, dz0, &c->dr, "texture", 0);
-        return;
+        return d;
     }
     // The depth plane of a depth-stencil texture into a depth-only one, or back (EA SPORTS FC 27's Frostbite copies its 1920x1080 Depth32Float_Stencil8 target into a Depth32Float
     // texture): a blit copies only between equal formats, so the 32-bit float depth goes through a buffer, taken from and written to the combined texture's depth plane
@@ -15283,7 +15284,7 @@ static void copy_t2t_enc(const p_copy_t2t *c) {
         if (!plane || plane.length < img) {
             if (plane) defer_obj_release(plane);
             plane = [g_dev newBufferWithLength:img options:MTLResourceStorageModePrivate];
-            if (!plane) { RED_ONCE(132, "depth plane copy: cannot create a %#lx-byte staging buffer", (unsigned long)img); return; }
+            if (!plane) { RED_ONCE(132, "depth plane copy: cannot create a %#lx-byte staging buffer", (unsigned long)img); return nil; }
             res_add(plane);
         }
         MTLBlitOption so = s.pixelFormat == MTLPixelFormatDepth32Float_Stencil8 ? MTLBlitOptionDepthFromDepthStencil : MTLBlitOptionNone, dop = d.pixelFormat == MTLPixelFormatDepth32Float_Stencil8 ? MTLBlitOptionDepthFromDepthStencil : MTLBlitOptionNone;
@@ -15291,13 +15292,13 @@ static void copy_t2t_enc(const p_copy_t2t *c) {
         enc_b_copy_buffer_texture_opt(blit(), plane, 0, row, img, MTLSizeMake(c->sr.width, c->sr.height, 1), d, dz0, dl, MTLOriginMake(c->dr.xoffset, c->dr.yoffset, 0), dop);
         static int once; if (!once++) MLOG("depth plane copy: %dx%d Metal format %lu → %lu through a staging buffer", c->sr.width, c->sr.height, (unsigned long)s.pixelFormat, (unsigned long)d.pixelFormat);
         if (rb) mirror_readback(c->dst, d, dl, dz0, &c->dr, "texture", 0);
-        return;
+        return d;
     }
     if (c->sr.width != c->dr.width || c->sr.height != c->dr.height || (c->sr.depth ? c->sr.depth : 1) != (c->dr.depth ? c->dr.depth : 1) || (c->flags & ~NVN_COPY_FLAGS_ENGINE_2D_BIT & ~NVN_COPY_FLAGS_LINEAR_FILTER_BIT)
         || s.pixelFormat != d.pixelFormat || s3 != d3) {
         RED_ONCE(33, "texture→texture copy case not implemented: %dx%dx%d→%dx%dx%d flags %#x format %lu→%lu 3D %d→%d", c->sr.width, c->sr.height, c->sr.depth, c->dr.width, c->dr.height, c->dr.depth,
                  c->flags, (unsigned long)s.pixelFormat, (unsigned long)d.pixelFormat, s3, d3);
-        return;
+        return nil;
     }
     id<MTL4ComputeCommandEncoder> b = blit();
     if (s3)
@@ -15322,12 +15323,12 @@ static void copy_t2t_enc(const p_copy_t2t *c) {
           }
       }
     }
+    return d;
 }
 // The destination's written region reaches its storage too when it is a GPU texture there (gsb_store), after the copy in command order
 static void copy_t2t(const p_copy_t2t *c) {
-    copy_t2t_enc(c);
-    if (!c->dst || c->dst->d.target == NVN_TEXTURE_TARGET_3D) return;
-    id<MTLTexture> d = tex_mtl(c->dst); if (!d) return;
+    id<MTLTexture> d = copy_t2t_enc(c);
+    if (!d || !c->dst || c->dst->d.target == NVN_TEXTURE_TARGET_3D) return;
     gsb_store(c->dst, d, c->has_dv && c->dv.set_levels ? c->dv.base_level : 0, (c->has_dv && c->dv.set_layers ? c->dv.min_layer : 0) + (unsigned)c->dr.zoffset, (unsigned)(c->dr.depth ? c->dr.depth : 1), &c->dr);
 }
 
@@ -15901,6 +15902,7 @@ void mtl_exec(const uint8_t *p) {
 static id<MTLRenderPipelineState> g_blit_pso; static MTLPixelFormat g_blit_fmt;
 static id<MTLSamplerState> g_blit_samp;
 static uint64_t g_present_n;
+static uint64_t g_present_ser;   // the serial of the texture present_now last showed (tests: which of a present's pictures the display link showed)
 uint64_t mtl_present_count(void) { return g_present_n; }   // Actual present count (heat attribution DM_HEAT computes the present frame rate)
 void mtl_res_snapshot(mtl_res_count *out) {
     memset(out, 0, sizeof *out);
@@ -16769,6 +16771,7 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
              g_up_total_ns / 1e6, g_bp_first_present / 1e9);
     }
     PD("X ser=%llu", t->serial);
+    g_present_ser = t->serial;
     id<MTLTexture> src = tex_mtl(t);
     if (!src) { RED_ONCE(8, "present texture could not get an MTLTexture"); return 0; }
     // The picture's shape for the front end's layout (front.h front_picture_shape): reported when its width / height changes by more than 0.1 %, not on a size change of the same
@@ -16935,22 +16938,26 @@ __attribute__((weak)) uint64_t dm_focus_in_since(void) { return 0; }
 // Under g_pq_mu; g_fg_owing (display link thread only) marks that present for present_now. g_fg_tick: the interval between counted ticks (a running mean)
 static pq_item g_fg_owe; static uint64_t g_fg_owe_tk; static double g_fg_owe_at, g_fg_tick; static int g_fg_owed;
 static uint64_t g_fg_late;
-// Frame generation pauses while frames drop: a generated frame between two presents that came late, or shown while a newer present already waits, mixes guessed pictures
-// into a rhythm of held ones, and the picture flickered while frames dropped (the owner, X6 on an iPhone, log 73: thermal state 1, 12-45 of 300 frames dropped).
-// A present that comes late (a tick found its interval over and nothing new to show: g_fg_starved) or is taken over older ones dropped for it stops them until FG_STEADY presents
-// in a row have come in time; the game's frames are shown as it draws them meanwhile. All on the display link thread, under g_pq_mu. Judged by the link's ticks, not by the
-// time between presents, which a game's own pacing varies
-// A lone drop pauses them for that present alone: three after each one showed as a 30 fps blip about every 1.5 s, 497 presents of about 7,600 (X10b, log 6). Only a drop
-// within FG_AGAIN presents of the one before, frames dropping on and on, takes the FG_STEADY presents, so guessed pictures do not mix into a rhythm of held ones (the flicker)
-#define FG_STEADY 3
+// Frame generation never falls back to the game's 30 fps (the owner: 60 stable, no switching to 30). X6-FF2 paused the generated frames while frames dropped and then stopped
+// the interpolation for 30-60 presents; each stop showed as the picture switching from 60 to 30 and back: 8 stops in 90 s in FF2's log 17 (thermal 1 to 2, the game 11-24 ms
+// and the interpolation 5-10 ms at 1920x1080 a frame), 11 in two minutes in log 15. Now a present that came late (a tick found its interval over and nothing new to show:
+// g_fg_starved) still shows its generated frame first: the frame between the picture held on screen and the new one, so the late frame reads as a slower step, not a jump.
+// Only a present taken over older ones dropped for it shows its own picture alone, that present only (g_fg_paused_behind): the screen is behind and catches up.
+// All on the display link thread, under g_pq_mu. Judged by the link's ticks, not by the time between presents, which a game's own pacing varies
 #define FG_AGAIN 30
-static int g_fg_steady, g_fg_starved, g_fg_need = 1; static uint64_t g_fg_paused_late, g_fg_paused_behind, g_fg_last_drop;
-// While frames keep dropping, the interpolation is not run at all (g_fg_shed, read by snap_take): pausing only what is shown left it costing its GPU time just when the GPU was
-// short (X11 on a hot iPhone, log 8: the game 19-22 ms and the interpolation 10 ms a frame against 33, 55-123 of 300 frames dropped). A second drop within FG_AGAIN presents of
-// the one before stops it: waiting for a run of six within 60 (X14's first build) kept it running over budget, 62-86 of 300 frames dropped (log 10). It runs again after
-// g_fg_resume presents in a row in time: 30 (a second), and 60 at most on repeats (X12 doubled it up to 300, 10 s at 30 fps: nine long stops in four minutes in log 9), back to 30
-// after a minute in time. Decided by dropped frames, not by the device's temperature
-static _Atomic int g_fg_shed; static int g_fg_resume = 30; static uint64_t g_fg_sheds, g_fg_shed_frames, g_fg_calm;
+static int g_fg_starved; static uint64_t g_fg_paused_behind, g_fg_last_drop, g_fg_drops;
+// Frames dropping on and on (a second drop within FG_AGAIN presents of the one before) make the interpolation lighter instead: the pixel budget's next step (fg_level_down,
+// g_fg_budget), smaller generated and shown frames brought back to the screen's size by the present's bilinear pass; past the last step it stays there and keeps running.
+// Its cost follows its pixels, so 960x540 costs about a quarter of 1920x1080, and the GPU's lighter load is less heat. A step back up after FG_UP_CALM presents in a row in
+// time (a minute at 30 fps), twice that, up to FG_UP_CALM_MAX, when the step up was followed by another step down within FG_UP_BACK presents. Decided by dropped frames,
+// not by the temperature
+enum { FG_LEVELS = 3, FG_UP_CALM = 1800, FG_UP_CALM_MAX = 7200, FG_UP_BACK = 600 };
+static const double g_fg_budget[FG_LEVELS] = {1440.0 * 810, 1200.0 * 675, 960.0 * 540};
+static const char *const g_fg_budget_name[FG_LEVELS] = {"1440x810", "1200x675", "960x540"};
+static _Atomic int g_fg_level;   // the budget's step: changed on the display link thread under g_pq_mu, read where the snapshots are sized (fg_shown_size)
+static _Atomic uint64_t g_fg_shown_px;   // the pixels of the last picture sized for frame generation as shown (fg_shown_size), for fg_level_down
+static uint64_t g_fg_lvl_calm, g_fg_up_at, g_fg_lvl_downs, g_fg_lvl_ups; static int g_fg_up_need = FG_UP_CALM;
+static int fg_level_down(void); static _Atomic uint64_t g_fg_gpu_avg_us;   // its moving average (1/16 a sample) in µs: whether the interpolation's own cost is heavy enough (fg_level_down)
 
 // A display link callback whose present took 50 ms or more (three ticks): where the time went, so a silent link (the rescue below) can be traced to its wait.
 // what: the picture shown; snap: the wait for the encode thread to commit its snapshot; present: present_now, alloc of it waiting for a present allocator, res for the residency commit
@@ -16994,8 +17001,8 @@ static void link_slow_note(const char *what, uint64_t snap, uint64_t present, ui
         if (!newer && g_dm_present_link && !g_rescue_mode) {
             pq_item ow = g_fg_owe; uint64_t tk = g_fg_owe_tk;
             if (!(++g_fg_shown % 1800)) MLOG("frame generation on the display link: %llu generated frames shown, each followed by its present's own picture; %llu of those skipped for a newer present; "
-                                             "presents shown without theirs while frames dropped: %llu late or after a late one, %llu taken over dropped ones or after them; interpolation stopped %llu times, for %llu presents", (unsigned long long)g_fg_shown, (unsigned long long)g_fg_late,
-                                             (unsigned long long)g_fg_paused_late, (unsigned long long)g_fg_paused_behind, (unsigned long long)g_fg_sheds, (unsigned long long)g_fg_shed_frames);
+                                             "without theirs: %llu taken over dropped ones (drops so far %llu; budget steps down %llu, back up %llu)", (unsigned long long)g_fg_shown, (unsigned long long)g_fg_late,
+                                             (unsigned long long)g_fg_paused_behind, (unsigned long long)g_fg_drops, (unsigned long long)g_fg_lvl_downs, (unsigned long long)g_fg_lvl_ups);
             pthread_mutex_unlock(&g_pq_mu);
             g_fg_owing = 1; uint64_t p0 = now_ns(), a0 = g_present_alloc_wait_ns, r0 = g_present_res_ns;
             @autoreleasepool { present_now(&ow.t, 0, ow.frame, tk, ow.crop, update.drawable, update.targetPresentationTimestamp); }
@@ -17006,7 +17013,7 @@ static void link_slow_note(const char *what, uint64_t snap, uint64_t present, ui
         g_fg_late++;
     }
     if (!g_dm_present_link || g_rescue_mode || g_pq_read == g_pq_in) {
-        if (g_dm_present_link && !g_rescue_mode) { g_link_empty++; if (!(g_link_hold_until > 0 && update.targetPresentationTimestamp < g_link_hold_until - tol)) g_fg_starved = 1; }   // (FG_STEADY)
+        if (g_dm_present_link && !g_rescue_mode) { g_link_empty++; if (!(g_link_hold_until > 0 && update.targetPresentationTimestamp < g_link_hold_until - tol)) g_fg_starved = 1; }   // (FG_AGAIN)
         pthread_mutex_unlock(&g_pq_mu); return; }
     // The previous frame's present interval was >= 2 (period > 25 ms): keep it on screen for its whole period before taking the next one, as the Switch flips only every N vertical syncs. This also holds while the link runs at 60 Hz (Mario 1.2.1 sets 2 for single frames, see nvn_game_fps in hle_nvn.c);
     //   before, every tick took the newest frame, so that frame, carrying the extra time step the game advanced for it, was shown for only 16.7 ms and the game looked like it jumped ahead
@@ -17018,17 +17025,26 @@ static void link_slow_note(const char *what, uint64_t snap, uint64_t present, ui
     static int fifo = -1; if (fifo < 0) { const char *e = getenv("DM_PRESENT_FIFO"); fifo = !(e && !strcmp(e, "0")); MLOG("display link: %s", fifo ? "frames in order, at most one behind" : "the newest frame each tick (DM_PRESENT_FIFO=0)"); }
     if (fifo && ticket > first) ticket = ticket - first >= 2 ? g_pq_in - 1 : first;
     pq_item it = g_pq[(ticket - 1) % PQ]; g_link_it_tin = it.t_in;
-    {   // frame generation pauses while frames drop (FG_STEADY): this present came late, or a newer one waits
+    {   // frame generation while frames drop (FG_AGAIN): it never stops; frames dropping on and on make it lighter
         // Behind: older presents were dropped for this one. One newer present waiting is not: with snapshots the game runs a frame ahead of the screen, and taking that
         // as behind paused frame generation for 1,060 of about 2,900 presents of a run that dropped next to no frames (log 80)
         int behind = ticket > first, late = g_fg_starved, drop = behind || late; g_fg_starved = 0;
-        if (drop) { int again = g_fg_last_drop && ticket - g_fg_last_drop <= FG_AGAIN; g_fg_need = again ? FG_STEADY : 1; g_fg_last_drop = ticket;
-            if (again && fg_on() && !atomic_load(&g_fg_shed)) { atomic_store(&g_fg_shed, 1); if (g_fg_sheds++) g_fg_resume = MIN(g_fg_resume * 2, 60); g_fg_calm = 0;
-                MLOG("frame generation: frames keep dropping, the interpolation stops until %d presents in a row come in time (#%llu)", g_fg_resume, (unsigned long long)g_fg_sheds); } }
-        g_fg_steady = drop ? 0 : g_fg_steady + 1;
-        if (atomic_load(&g_fg_shed) && g_fg_steady >= g_fg_resume) { atomic_store(&g_fg_shed, 0); MLOG("frame generation: %d presents in time, the interpolation runs again", g_fg_steady); }
-        if (!drop && ++g_fg_calm >= 1800 && g_fg_resume > 30) { g_fg_resume = 30; g_fg_calm = 0; }
-        if (it.gen && g_fg_steady < g_fg_need) { it.gen = 0; if (behind) g_fg_paused_behind++; else g_fg_paused_late++; }
+        if (drop) { int again = g_fg_last_drop && ticket - g_fg_last_drop <= FG_AGAIN; g_fg_last_drop = ticket; g_fg_lvl_calm = 0; g_fg_drops++;
+            if (again && fg_on()) {
+                int st = fg_level_down();
+                if (st < 0) { static uint64_t n; if (!(n++ % 100)) MLOG("frame generation: frames keep dropping, but the interpolation takes only %.1f ms: the game's frames are late, not its; its frames keep the %s pixel budget (%llu drops so far)",
+                                                                     atomic_load(&g_fg_gpu_avg_us) / 1000.0, g_fg_budget_name[atomic_load(&g_fg_level)], (unsigned long long)g_fg_drops); }
+                else if (st > 0) {   // lighter (FG_LEVELS)
+                    if (g_fg_up_at && ticket - g_fg_up_at <= FG_UP_BACK) g_fg_up_need = MIN(g_fg_up_need * 2, FG_UP_CALM_MAX);
+                    g_fg_lvl_downs++; g_fg_last_drop = 0;   // the next drop counts as a lone one: the lighter frames get their chance
+                    MLOG("frame generation: frames keep dropping, its frames are made lighter: the %s pixel budget (step %d of %d; #%llu)", g_fg_budget_name[atomic_load(&g_fg_level)],
+                         atomic_load(&g_fg_level) + 1, FG_LEVELS, (unsigned long long)g_fg_lvl_downs);
+                } else { static uint64_t n; if (!(n++ % 100)) MLOG("frame generation: frames keep dropping at its lightest frames (the %s pixel budget); it keeps running, never falling back to 30 fps (%llu drops so far)",
+                                                                   fg_fixed() ? "DM_FRAMEGEN_SCALE's" : g_fg_budget_name[atomic_load(&g_fg_level)], (unsigned long long)g_fg_drops); } } }
+        if (!drop && atomic_load(&g_fg_level) > 0 && ++g_fg_lvl_calm >= (uint64_t)g_fg_up_need) {   // in time for long enough: a step back up
+            atomic_store(&g_fg_level, atomic_load(&g_fg_level) - 1); g_fg_lvl_calm = 0; g_fg_up_at = ticket; g_fg_lvl_ups++;
+            MLOG("frame generation: %d presents in a row in time, its frames back to the %s pixel budget (step %d of %d)", g_fg_up_need, g_fg_budget_name[atomic_load(&g_fg_level)], atomic_load(&g_fg_level) + 1, FG_LEVELS); }
+        if (it.gen && behind) { it.gen = 0; g_fg_paused_behind++; }   // the screen is behind: this present alone, its own picture
     }
     g_pq_read = ticket;
     if (ticket > first) { g_link_dropped += ticket - first; for (uint64_t k = first; k < ticket; k++) { g_pres[k % PRING] = (pres_ent){k, -1}; mtl_tex_unpin(g_pq[(k-1)%PQ].t.serial); } }   // Old frames merged and dropped are recorded as "not presented", so the present statistics honestly count them as dropped frames
@@ -17298,8 +17314,11 @@ static int fg_mv_on(void) {
     if (e && atoi(e) <= 0) { MLOG("frame generation: no motion given to the interpolator (DM_FRAMEGEN_MV=0): its own flow finds it, up to about 64 px a frame"); return g_fgmv_ok = 0; }
     NSError *err = nil; id<MTLLibrary> lib = host_lib("fgmv", &err);
     static const char *fn[8] = {"fgmv_luma", "fgmv_search", "fgmv_pick", "fgmv_still", "fgmv_hud", "fgmv_keep", "fgmv_pstill", "fgmv_conf"};
+    // DM_FRAMEGEN_PASTE=1: blocks whose motion is not trusted take the present's own pixels whole (fgmv.metal FGMV_PASTE: off by default, squares that stepped at 30 fps on camera turns)
+    const char *pe = getenv("DM_FRAMEGEN_PASTE"); bool paste = pe && atoi(pe) > 0;
+    MTLFunctionConstantValues *cv = [MTLFunctionConstantValues new]; [cv setConstantValue:&paste type:MTLDataTypeBool atIndex:0];
     for (int i = 0; i < 8; i++) {
-        id<MTLFunction> f = lib ? [lib newFunctionWithName:@(fn[i])] : nil;
+        id<MTLFunction> f = !lib ? nil : i == FGMV_HUD ? [lib newFunctionWithName:@(fn[i]) constantValues:cv error:&err] : [lib newFunctionWithName:@(fn[i])];
         g_fgmv_ps[i] = f ? [g_dev newComputePipelineStateWithFunction:f error:&err] : nil;
         if (!g_fgmv_ps[i]) { MLOG("[RED] frame generation: no %s pipeline (%s): the interpolator gets no motion, as X6-X9", fn[i], err.description.UTF8String); return g_fgmv_ok = 0; }
     }
@@ -17307,7 +17326,8 @@ static int fg_mv_on(void) {
     MTL4ArgumentTableDescriptor *ad = [MTL4ArgumentTableDescriptor new]; ad.maxTextureBindCount = 5;   // fgmv_keep reads the motion at 4
     g_fgmv_args = [g_dev newArgumentTableWithDescriptor:ad error:&err];
     if (!g_fgmv_args) { MLOG("[RED] frame generation: no argument table for the motion (%s): no motion given", err.description.UTF8String); return g_fgmv_ok = 0; }
-    MLOG("frame generation: motion found from the presented pictures (DM_FRAMEGEN_MV=1: 64 px tiles searched within 192 px at 1/8 size), the still HUD kept from the present");
+    MLOG("frame generation: motion found from the presented pictures (DM_FRAMEGEN_MV=1: 64 px tiles searched within 192 px at 1/8 size, refined to 2 px), the still HUD kept from the present%s",
+         paste ? "; blocks whose motion is not trusted pasted from it (DM_FRAMEGEN_PASTE=1)" : "");
     return g_fgmv_ok = 1;
 }
 // The formats fg_keep may write the generated frame in (shader writes; not the sRGB ones)
@@ -17398,18 +17418,31 @@ static id<MTL4FXFrameInterpolator> fg_for(id<MTLTexture> col) {
 // pixels: on an iPhone 18 Pro Max with Wide view its GPU time was 8-13 ms a generated frame (p50) at 2352x1080 against 5-10 ms at 1920x1080 (logs 7 and 9), enough with the game's own
 // 11-28 ms to drop frames and stop the interpolation nine times in five minutes. A 16:9 picture on a phone stays at its shown size. The launcher's Frame generation size row (Full / Lighter)
 // is gone: DM_FRAMEGEN_SCALE (0.5 to 1) remains, to measure, as a fixed factor in place of the budget
-enum { FG_BUDGET = 1920 * 1080 };
+// The budget is 1440x810 and steps down while frames keep dropping (g_fg_level, fg_level_down). Its cost follows its pixels, so 1440x810 (56% of 1080p) costs about half.
+// Steps (g_fg_budget): 1440x810, 1200x675, 960x540, never below 0.5 of the size shown.
 static double fg_fixed(void) {   // DM_FRAMEGEN_SCALE, or 0 for the budget
     static double v = -1; if (v >= 0) return v;
     const char *e = getenv("DM_FRAMEGEN_SCALE"); double x = e && *e ? atof(e) : 0;
     v = !(e && *e) ? 0 : x >= 0.5 && x <= 1 ? x : 1;
     if (e && *e && v != x) MLOG("[RED] DM_FRAMEGEN_SCALE=%s: 0.5 to 1; using %.2f", e, v);
-    if (v) MLOG("frame generation: its frames at %.2f of the size shown (DM_FRAMEGEN_SCALE) in place of the 1920x1080 pixel budget", v);
+    if (v) MLOG("frame generation: its frames at %.2f of the size shown (DM_FRAMEGEN_SCALE) in place of the pixel budget", v);
     return v;
+}
+static double fg_size_at(double px, int level) {   // the budget's factor at a step for a picture of px pixels: within 10 % of the budget, as shown (not worth the pass)
+    double b = g_fg_budget[level < 0 ? 0 : level >= FG_LEVELS ? FG_LEVELS - 1 : level];
+    return px <= 1.1 * b ? 1 : fmax(0.5, sqrt(b / px));
 }
 static double fg_size_for(double w, double h) {   // the factor for a picture shown at w x h
     double f = fg_fixed(); if (f) return f;
-    double px = w * h; return px <= 1.1 * FG_BUDGET ? 1 : fmax(0.75, sqrt(FG_BUDGET / px));   // within 10 % of it (2144x984): as shown, not worth the scaler's pass
+    return fg_size_at(w * h, atomic_load(&g_fg_level));
+}
+// Only while the interpolation's own GPU time is heavy (its average at least DM_FRAMEGEN_HEAVY_MS, default 8): -1 otherwise, and its frames keep their size.
+static double fg_heavy_ms(void) { static double v = -1; if (v < 0) { const char *e = getenv("DM_FRAMEGEN_HEAVY_MS"); v = e && *e ? atof(e) : 8; if (e && *e) MLOG("frame generation: made lighter only while the interpolation takes %.1f ms or more (DM_FRAMEGEN_HEAVY_MS)", v); } return v; }
+static int fg_level_down(void) {
+    int l = atomic_load(&g_fg_level); double px = (double)atomic_load(&g_fg_shown_px);
+    if (!fg_fixed() && atomic_load(&g_fg_gpu_avg_us) < fg_heavy_ms() * 1000) return -1;
+    if (fg_fixed() || l + 1 >= FG_LEVELS || !px || !(fg_size_at(px, l + 1) < fg_size_at(px, l))) return 0;
+    atomic_store(&g_fg_level, l + 1); return 1;
 }
 static double fg_size(void) {   // the factor for the screen (the drawable), as fx_mode asks before the first picture: below 1 when frames may be made smaller than shown
     CAMetalLayer *layer = (__bridge CAMetalLayer *)front_metal_layer(); CGSize ds = layer ? layer.drawableSize : CGSizeZero;
@@ -17419,8 +17452,10 @@ static int fg_shown_size(NSUInteger cw, NSUInteger ch, NSUInteger *tw, NSUIntege
     CAMetalLayer *layer = (__bridge CAMetalLayer *)front_metal_layer(); if (!layer || !cw || !ch) return 0;
     CGSize ds = layer.drawableSize; if (ds.width < 16 || ds.height < 16) return 0;
     double s = fmin(fmin(ds.width / cw, ds.height / ch), 1);   // fitted into the drawable, as the present draws it; never larger than the crop
+    atomic_store(&g_fg_shown_px, (uint64_t)(cw * s * ch * s));
     double f = fg_size_for(cw * s, ch * s); s *= f;   // the pixel budget (or DM_FRAMEGEN_SCALE)
-    static double lf = -1; if (f != lf) { lf = f; if (f < 1) MLOG("frame generation: a picture shown at %.0fx%.0f is generated at %.2f of it (%lux%lu, the 1920x1080 pixel budget), brought back by the present", cw * s / f, ch * s / f, f, (unsigned long)lround(cw * s), (unsigned long)lround(ch * s)); }
+    static double lf = -1; if (f != lf) { lf = f; if (f < 1) MLOG("frame generation: a picture shown at %.0fx%.0f is generated at %.2f of it (%lux%lu; %s%s), brought back by the present", cw * s / f, ch * s / f, f, (unsigned long)lround(cw * s), (unsigned long)lround(ch * s),
+                                                       fg_fixed() ? "DM_FRAMEGEN_SCALE" : "pixel budget ", fg_fixed() ? "" : g_fg_budget_name[atomic_load(&g_fg_level)]); }
     if (!(s < 0.95) || s < 0.25) return 0;
     *tw = MAX((NSUInteger)lround(cw * s), 16); *th = MAX((NSUInteger)lround(ch * s), 16); return 1;
 }
@@ -17466,6 +17501,7 @@ static int fg_scale(id<MTL4CommandBuffer> cb, int k, id<MTLTexture> src, id<MTLT
 // device it runs on (log.txt on an iPhone)
 static void fg_gpu_note(double s) {
     g_fg_gpu_last = s;
+    if (s > 0 && s < 1) { uint64_t a = atomic_load(&g_fg_gpu_avg_us), us = (uint64_t)(s * 1e6); atomic_store(&g_fg_gpu_avg_us, a ? (a * 15 + us) / 16 : us); }
     static pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER; static double v[600]; static int n;
     if (!(s > 0 && s < 1)) return;
     pthread_mutex_lock(&mu);
@@ -17666,7 +17702,7 @@ static uint64_t snap_take(const tex_t *t, double period, const int crop[4], int 
         int pk = (int)((atomic_load(&g_snap_next) + (uint64_t)g_snap_n - 1) % (uint64_t)g_snap_n);
         g_snap[k].seq = g_fg_seq;
         if (fg_mv_on()) fg_luma(cb, k);
-        if (period > 0.025 && !atomic_load(&g_fg_shed)) fg_encode(cb, k, pk, period); else { g_fg_warm = 0; if (period > 0.025) g_fg_shed_frames++; }
+        if (period > 0.025) fg_encode(cb, k, pk, period); else g_fg_warm = 0;
     }
     [cb endCommandBuffer];
     MTL4CommitOptions *o = nil;

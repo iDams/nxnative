@@ -31,12 +31,12 @@ int main(void) { @autoreleasepool {
         "void triangle(Mesh m, uint first) { float z = float(first) * 0.125f;\n"
         "  m.set_vertex(0, V{float4(-1,-1,z,1)}); m.set_vertex(1, V{float4(3,-1,z,1)}); m.set_vertex(2, V{float4(-1,3,z,1)});\n"
         "  m.set_index(0,0); m.set_index(1,1); m.set_index(2,2); m.set_primitive_count(1); }\n"
-        // As dmsh_meshstage.py emits them: the task and object functions read the draw's {count, first} at buffer 29, and a mesh shader with no task its block's first workgroup
+        // As dmsh_meshstage.py emits them: the object function reads {count, first} at buffer 29, while task shaders in chain 39417042cfe8 read first at buffer 29 (a9dc57b8)
         "[[object]] void block(object_data Block& b [[payload]], mesh_grid_properties grid, uint otg [[threadgroup_position_in_grid]], constant uint* draw [[buffer(29)]]) {\n"
         "  uint base = otg * 1024u; b.first = draw[1] + base; grid.set_threadgroups_per_grid(uint3(min(draw[0] - base, 1024u), 1u, 1u)); }\n"
         "[[mesh]] void direct(Mesh m, const object_data Block& b [[payload]], uint tg [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]]) { if (!tid) triangle(m, b.first + tg); }\n"
-        "[[object]] void task(object_data Payload& p [[payload]], mesh_grid_properties grid, uint tid [[thread_index_in_threadgroup]], constant uint* draw [[buffer(29)]]) {\n"
-        "  if (!tid) { p.first = draw[1]; grid.set_threadgroups_per_grid(uint3(1)); } }\n"
+        "[[object]] void task(object_data Payload& p [[payload]], mesh_grid_properties grid, uint tid [[thread_index_in_threadgroup]], constant uint& first [[buffer(29)]]) {\n"
+        "  if (!tid) { p.first = first; grid.set_threadgroups_per_grid(uint3(1)); } }\n"
         // a workgroup's own pixel of a GW x GH target (its number modulo the pixels), at depth (number + 1) / 8192: a triangle around that pixel's centre and no other
         "constant uint GW = 64, GH = 48;\n"
         "[[mesh]] void pixel(Mesh m, const object_data Block& b [[payload]], uint tg [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]]) {\n"

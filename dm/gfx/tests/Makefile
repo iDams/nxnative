@@ -250,6 +250,12 @@ check_t_present_snap: t_present_snap
 	DM_NVN_ENC_THREAD=1 MTL_DEBUG_LAYER=1 ./t_present_snap queued
 	DM_NVN_ENC_THREAD=0 MTL_DEBUG_LAYER=1 ./t_present_snap ticket
 	DM_NVN_ENC_THREAD=1 MTL_DEBUG_LAYER=1 ./t_present_snap ticket
+t_framegen: t_framegen.m $(MTL_T_DEP)
+	clang $(CFLAGS) -fobjc-arc -o $@ t_framegen.m ../../host/crash.c ../../host/hle_bigstack.c t_host_stubs.c $(filter-out ../nvn/nvn_mtl.m,$(GFX)) $(FW)
+.PHONY: check_t_framegen
+check_t_framegen: t_framegen
+	MTL_DEBUG_LAYER=1 ./t_framegen
+	./t_framegen size   # MetalFX's Metal 4 spatial scaler trips internal validation (_outputTextureBarrierStages not set, line 544)
 t_reorder_chain: t_reorder_chain.m $(MTL_T_DEP)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_reorder_chain.m $(MTL_T_SRC) $(FW)
 check_t_reorder_chain: RUN_ENV = MTL_DEBUG_LAYER=1
@@ -432,7 +438,7 @@ t_res_commit: t_res_commit.m $(MTL_T_DEP)
 check_t_res_commit: RUN_ENV = MTL_DEBUG_LAYER=1
 t_upload_src: t_upload_src.m $(MTL_T_DEP)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_upload_src.m $(MTL_T_SRC) $(FW)
-check_t_upload_src: RUN_ENV = MTL_DEBUG_LAYER=1
+check_t_upload_src: RUN_ENV = DM_NVN_UP_WINDOWS=0 MTL_DEBUG_LAYER=1
 t_upload_budget: t_upload_budget.m $(MTL_T_DEP)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_upload_budget.m $(MTL_T_SRC) $(FW)
 check_t_upload_budget: t_upload_budget

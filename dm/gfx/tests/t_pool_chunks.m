@@ -118,6 +118,7 @@ int main(void) { @autoreleasepool {
         rd.pool = &pool; rd.mem = mem + 100 * MB; rd.off = 100 * MB;
         un = rd; un.serial = 99802; un.mem = mem + 110 * MB; un.off = 110 * MB;
         rt = rd; rt.serial = 99803; rt.mem = mem + 120 * MB; rt.off = 120 * MB; rt.d.flags = NVN_TEXTURE_FLAGS_COMPRESSIBLE;
+        mtl_tex_init(&rd); mtl_tex_init(&un); mtl_tex_init(&rt);
         mtl_reg_tex(301, &rd, NULL); mtl_reg_tex(302, &un, NULL); mtl_reg_tex(303, &rt, NULL);
         // Past the budget, so the walk makes none of them
         id<MTLBuffer> hog = [g_dev newBufferWithLength:pool_budget() + (1u << 20) options:MTLResourceStorageModePrivate]; CHECK("over the budget", hog && pool_budget_full());
@@ -145,7 +146,7 @@ int main(void) { @autoreleasepool {
         CHECK("an ID given another texture keeps its read mark", pool_seen(301));
         mtl_reg_tex(301, NULL, NULL); CHECK("an emptied ID has not been read", !pool_seen(301));
         mtl_reg_tex(304, &t4, NULL); CHECK("an ID given its first texture has not been read", !pool_seen(304));
-        mtl_reg_tex(302, NULL, NULL); mtl_reg_tex(303, NULL, NULL); mtl_reg_tex(304, NULL, NULL); mtl_tex_release(&rd); mtl_tex_release(&un); mtl_drain(); hog = nil;
+        mtl_reg_tex(302, NULL, NULL); mtl_reg_tex(303, NULL, NULL); mtl_reg_tex(304, NULL, NULL); mtl_tex_release(&rd); mtl_tex_release(&un); mtl_tex_release(&rt); mtl_drain(); hog = nil;
     }
     // The write log: one bit an entry, and the host learns the range of the entry the bit names, from the table the shader used
     {

@@ -73,7 +73,7 @@ static void big_setup(bigpool *b) {
     mtl_pool_add(b->mem, BIG); nvn_dirty_add_range(b->mem, BIG);
 }
 static tex_t big_tex(bigpool *b, uint64_t serial, size_t off, unsigned size, int format, unsigned levels) {
-    tex_t t = (tex_t){.magic = MAGIC('T', 'E', 'X', 0), .serial = serial, .pool = &b->pool, .mem = (uint8_t *)b->mem + off};
+    tex_t t = (tex_t){.magic = MAGIC('T', 'E', 'X', 0), .serial = serial, .pool = &b->pool, .off = off, .mem = (uint8_t *)b->mem + off};
     t.d = (nvn_texdesc){.target = NVN_TEXTURE_TARGET_2D, .format = format, .width = size, .height = size, .depth = 1, .levels = levels, .samples = 1};
     nvn_tex_layout(&t.d, &t.L); return t;
 }
@@ -241,7 +241,7 @@ int main(void) {
         uint64_t stores = g_gsb_stores;
         gpu_clear(&tile, 0.2f);
         CHECK("a clear of a GPU texture reaches its storage", stored_red(&tile) == 51 && g_gsb_stores == stores + 1);
-        CHECK("which stays the GPU's", gpuw_overlaps((uintptr_t)tile.mem, (uintptr_t)tile.mem + tile.L.size) && !tex_cpu_written(tile.serial));
+        CHECK("which stays the GPU's", gws_owned((uintptr_t)tile.mem, (uintptr_t)tile.mem + tile.L.size) && !tex_cpu_written(tile.serial));
         tex_t old = big_tex(&bp, 7202, 0x80000, 128, NVN_FORMAT_RGBA8, 1);   // the slot the tile moves to held a tile the GPU drew
         gpu_clear(&old, 0.6f); mtl_tex_release(&old);
         tex_t moved = big_tex(&bp, 7203, 0x80000, 128, NVN_FORMAT_RGBA8, 1);
@@ -262,8 +262,9 @@ int main(void) {
         CHECK("an image's clear is not stored", g_gsb_stores == before);
         mtl_tex_release(&img);
         // Ocarina of Time's normal tiles: 260x260 RG8, 9 levels, rows of 520 bytes (no multiple of 16), smaller block heights in the small levels
-        tex_t nt = big_tex(&bp, 7206, 0x00000, 260, NVN_FORMAT_RG8, 9);
-        CHECK("the tile fits below the others", nt.L.size <= 0x40000);
+        bigpool gp; big_setup(&gp);
+        tex_t nt = big_tex(&gp, 7206, 0x40000, 260, NVN_FORMAT_RG8, 9);
+        CHECK("the tile fits in the pool", nt.off + nt.L.size <= BIG);
         mtl_tex_gpu_written(&nt); mtl_sub_begin();
         for (unsigned lv = 0; lv < 9; lv++) {
             p_clear_tex tc = {.tex = &nt, .has_view = 1, .r = {0, 0, 0, (int)MAX(260u >> lv, 1u), (int)MAX(260u >> lv, 1u), 1}, .mask = 15, .c.f = {(float)(lv + 1) / 51.f, 0.2f, 0, 1}};
@@ -275,7 +276,8 @@ int main(void) {
               memset(lin, 0xEE, 260 * 260 * 2); bad += nvn_deswizzle(&nt.d, lv, 0, nt.mem, lin, w * 2) ? 1000 : 0;
               for (unsigned i = 0; i < w * w; i++) bad += lin[i * 2] != (lv + 1) * 5 || lin[i * 2 + 1] != 51; }
           CHECK("every level of a 260x260 RG8 9-level tile reaches its storage, every texel", !bad); free(lin); }
-        mtl_tex_release(&nt); mtl_tex_release(&moved2); mtl_tex_release(&moved); mtl_tex_release(&tile);
+        mtl_tex_release(&nt); mtl_alias_drop_pool(&gp.pool); mtl_pool_del(gp.mem); nvn_dirty_remove_range(gp.mem); mtl_drain(); free(gp.mem);
+        mtl_tex_release(&moved2); mtl_tex_release(&moved); mtl_tex_release(&tile);
         mtl_alias_drop_pool(&bp.pool); mtl_pool_del(bp.mem); nvn_dirty_remove_range(bp.mem); mtl_drain(); free(bp.mem);
     }
     printf("t_cpu_storage: %d checks, %d failed\n", checks, failed);
