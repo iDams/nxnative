@@ -48,6 +48,7 @@ static void same_as_whole(id<MTLBuffer> patched, const char *label) {
 
 int main(void) { @autoreleasepool {
     setenv("DM_NVN_RT_RECYCLE", "0", 1);   // textures with allocations of their own: one placed in a recycled heap is resident through its heap, whatever retires it
+    setenv("DM_NVN_POOL_SKIP_RETIRED", "0", 1);   // tests the 1-submission transient view path of retired registrations (disabled when pool_skip_retired=on)
     mtl_init();
     uint8_t *ma = pages(), *mb = pages(), *mc = pages();
     // Pool A holds texture ID 1; pool B is a pool object whose storage the host does not map yet (a virtual pool before its first mapping): ID 2 there has no storage
