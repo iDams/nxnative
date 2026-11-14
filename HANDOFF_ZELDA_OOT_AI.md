@@ -7,12 +7,13 @@
 ---
 
 > [!IMPORTANT]
-> **VERSIÓN ESTABLE DE REFERENCIA (`v1.0-oot-30fps-stable` — 2026-11-09):**
-> * **Tag Git en `/Users/marco/ns` (`origin`):** `v1.0-oot-30fps-stable` (también respaldado en la rama `stable/oot-30fps`).
+> **VERSIÓN ESTABLE ACTUAL (`v1.1-oot-wideview-stable` — 2026-11-13):**
+> * **Tag Git en `/Users/marco/ns` (`origin`):** `v1.1-oot-wideview-stable` (`main` y rama `stable/oot-wideview`; respaldo histórico `16:9` intacto en `v1.0-oot-30fps-stable` / `stable/oot-30fps` `d0a4b0e3`).
 > * **Cadena de Shaders:** `39417042cfe8` (`/Users/marco/Ocarina/shader/ios/b-39417042cfe8.img`, 5.4 GB, 42,848 shaders, `inputs 4bd48f723876`).
-> * **Rendimiento Medido en iPhone 17 Pro Max (Bosque Kokiri):** **30.0 FPS estables clavados** (`frame p50 = 33.33 ms`, `p95 = 33.91 ms`, 0–1 frames caídos por cada 300 frames, consumo CPU ~2.1 W, estado térmico `0`).
-> * **Estado Gráfico:** Hierba, follaje, sombras y geometría completamente estables sin parpadeos ni objetos que aparezcan/desaparezcan al mover la cámara.
-> * **Cómo volver a esta versión estable si un experimento futuro falla:** Ver [Sección 8 (Restauración Rápida a la Versión Estable)](#8-restauración-rápida-a-la-versión-estable-rollback).
+> * **Modo de Pantalla y Ajuste Verificado (`iPhone Dams`):** Hor+ Wide View `21:9` (`2352x1080`, `DM_WIDE_VIEW=1` activo por defecto) + **`DM_FPS_TARGET=30`, `DM_FRAMEGEN=0`, `DM_DYNAMIC_RESOLUTION=1`, `DM_UPSCALER=metalfx`**.
+> * **Rendimiento Medido (`iPhone Dams`):** **30.0 FPS estables clavados** (`0` cuadros caídos/descartados en `1,200` frames consecutivos `f1201–f2400`, `frame time p50 = 33.33–33.39 ms`, `p99 = 33.34 ms`, consumo CPU `0.37–1.30 W`, `wakeups 685–840/s`, `thermal 0`, `brightness 0.55`).
+> * **Estado Gráfico:** Hierba, follaje, sombras, geometría 3D en `21:9`, menús a pantalla completa y minimapa/HUD centrados completamente estables.
+> * **Cómo volver a una versión estable si un experimento futuro falla:** Ver [Sección 8 (Restauración Rápida a la Versión Estable)](#8-restauración-rápida-a-la-versión-estable-rollback).
 
 ---
 
@@ -20,7 +21,7 @@
 
 | Repositorio / Fuente | URL Remota | Rama / Tag Estable | Rol |
 | :--- | :--- | :--- | :--- |
-| **nxnative (Fork Privado)** | `https://github.com/iDams/nxnative.git` | `main` / Tag: **`v1.0-oot-30fps-stable`** / Rama: **`stable/oot-30fps`** | Motor nativo de recompilación para Switch / Switch 2 en Apple Silicon / iOS. Clonado local en `/Users/marco/ns`. |
+| **nxnative (Fork Privado)** | `https://github.com/iDams/nxnative.git` | `main` / Tag: **`v1.1-oot-wideview-stable`** / Rama: **`stable/oot-wideview`** (fallback `16:9`: `v1.0-oot-30fps-stable` / `stable/oot-30fps`) | Motor nativo de recompilación para Switch / Switch 2 en Apple Silicon / iOS. Clonado local en `/Users/marco/ns`. |
 | **nxnative (Upstream)** | `https://github.com/seedds/nxnative.git` | `main` (incluye [PR #1852](https://github.com/seedds/nxnative/pull/1852)) | Repositorio upstream original del motor `dm` (revisar PRs de rendimiento, Metal 4 y `0400486024DEC000`). |
 | **kid-with-sword-remake (cheemu21)** | `https://github.com/cheemu21/kid-with-sword-remake/releases` | Releases (`v22+`) | Builds y parches comunitarios específicos para *Zelda: Ocarina of Time* (Switch 2). Revisar periódicamente sus notas de release y commits embebidos para nuevas optimizaciones de OoT. |
 | **NX2Apple (Frontend & Perfiles)** | `https://github.com/LNPANDY/NX2Apple` | `main` | Frontend comunitario y parches iOS sobre `nxnative`. |
@@ -85,20 +86,19 @@
 ## 5. Configuración Estable de `Documents/env.txt` en el iPhone
 
 ```ini
-DM_OPMODE=0
-DM_SHOW_FPS=1
-DM_LAUNCHER=0
-DM_FPS=30
 DM_FPS_TARGET=30
-DM_FPS_HOLD=off
-DM_FPS_PAYBACK=off
+DM_FRAMEGEN=0
+DM_FRAMEGEN_MV=1
 DM_DYNAMIC_RESOLUTION=1
-DM_PSO_ASYNC=1
-DM_THERMAL_CAP=0
 DM_UPSCALER=metalfx
+DM_THERMAL_CAP=0
 DM_QOS_MAP=1
 DM_QOS_EDGES=45,59
 ```
+
+> [!NOTE]
+> * **`DM_WIDE_VIEW=1`** queda activo por defecto desde el launcher (`dm/games/settings.tsv`); si se añade `DM_LAUNCHER=0` en `Documents/env.txt`, incluir también `DM_WIDE_VIEW=1` explícitamente para que `LauncherModel.applySaved()` no vuelva a `16:9` (además de `DM_OPMODE=0` y `DM_SHOW_FPS=1` si se desean fijar).
+> * **`DM_FRAMEGEN=0`** se fija explícitamente porque en `21:9` la interpolación (`~10.75–11.54 ms` GPU extra) excede el margen de `33.3 ms` y provoca caídas/pausas; con `DM_FRAMEGEN=0` sostiene `30.0 FPS` (`0` caídas) y `thermal 0`.
 
 ---
 
@@ -146,10 +146,11 @@ xcrun devicectl device process launch \
 Si en el futuro se realizan experimentos en `/Users/marco/ns` y el rendimiento o los gráficos fallan, ejecuta estos comandos exactos para volver a esta versión estable probada:
 
 ```bash
-# 1. Restaurar el código del motor al tag estable v1.0-oot-30fps-stable
+# 1. Restaurar el código del motor al tag estable actual v1.1-oot-wideview-stable
+#    (o usar v1.0-oot-30fps-stable para volver al baseline anterior 16:9)
 cd /Users/marco/ns
-git checkout v1.0-oot-30fps-stable
-# (O para resetear main a la versión estable: git checkout main && git reset --hard v1.0-oot-30fps-stable)
+git checkout v1.1-oot-wideview-stable
+# (O para resetear main a la versión estable: git checkout main && git reset --hard v1.1-oot-wideview-stable)
 
 # 2. Recompilar, verificar firma, instalar encima y lanzar en el iPhone Dams
 xcodebuild -project /Users/marco/Ocarina/xcode/DmIOS.xcodeproj \
@@ -303,10 +304,10 @@ xcrun devicectl device process launch \
 
 ---
 
-## 14. Modo Experimental Hor+ Wide View `21:9` (Rama `exp/wide-view`) (2026-11-13)
+## 14. Versión Estable Hor+ Wide View `21:9` + Ajuste `30 FPS` (`v1.1-oot-wideview-stable`) (2026-11-13)
 
-> [!WARNING]
-> Versión **experimental** publicada en la rama `exp/wide-view` (tag `v1.1-oot-wideview-exp`). La rama estable `stable/oot-30fps` (`d0a4b0e3`, tag `v1.0-oot-30fps-stable`) y `main` (`6f0aff4f`) permanecen intactas sin cambios.
+> [!IMPORTANT]
+> Promovida desde `exp/wide-view` (`b53e81e5`, tag `v1.1-oot-wideview-exp`) hacia **`main`** y la rama estable **`stable/oot-wideview`** (tag **`v1.1-oot-wideview-stable`**) tras validar la configuración estable en `30 FPS` (`DM_FRAMEGEN=0`) en `iPhone Dams`. La rama y tag históricos `stable/oot-30fps` (`d0a4b0e3`, `v1.0-oot-30fps-stable`) se conservan intactos como punto de respaldo `16:9`.
 
 ### 14.1 Cambios implementados (`DM_WIDE_VIEW=1`, sin tocar `DMSH_CHAIN`)
 * **`dm/ios/Sources/front_ios.m`:** Cuando `DM_WIDE_VIEW=1`, detecta el aspect ratio de la ventana del iPhone (`1.8 <= r <= 2.6`) y exporta `DM_WIDE_ASPECT` antes de iniciar el host (en `iPhone Dams`: `2.173:1` en `956x440` pts).
@@ -329,8 +330,12 @@ xcrun devicectl device process launch \
   * Compilado en `Release` con `DM_COPY_ROMFS=NO`, firma verificada (`codesign --verify --deep --strict`), instalado sin borrar datos ni saves.
   * Confirmado visualmente en juego: vista `2352x1080` sin barras negras ni estiramiento 3D, oscurecido del menú *Load* completo de borde a borde y minimapa/paneles centrados y alineados.
 
-### 14.3 Nota de Rendimiento Abierta
-* En la captura en vivo `DM_WIDE_VIEW=1` con `DM_FRAMEGEN=1` (`2125x976`), se observó caída fuerte de FPS y alto tiempo de GPU; su diagnóstico queda documentado y en revisión sobre esta rama experimental.
+### 14.3 Diagnóstico de Rendimiento y Verificación Estable (`DM_FRAMEGEN=0`)
+* **Causa de la caída de FPS con `DM_FRAMEGEN=1` en `21:9`:** La interpolación de FrameGen (`2125x976` vía `FG_BUDGET`) consumía **`p50 10.749–11.542 ms`** (`p95 11.036–26.817 ms`) de GPU por frame interpolado sobre un renderizado base de `~18.4–19.1 ms` GPU, saturando el presupuesto de `33.3 ms` y provocando ráfagas de `14–15` cuadros caídos/300 (`p99 75.01–100.01 ms`) con pausas automáticas de interpolación (`#1`/`#2`).
+* **Solución estable (`DM_FRAMEGEN=0` + `DM_FPS_TARGET=30` + `DM_DYNAMIC_RESOLUTION=1` + `DM_UPSCALER=metalfx` en `Documents/env.txt`):**
+  * Medido en vivo en `iPhone Dams` en `21:9` (`1568x720 → 2352x1080` hasta `1046x480 → 2352x1080` con MetalFX spatial scaler HDR `0.7–1.1 ms`):
+  * **4 ventanas consecutivas (`f1201–f2400`, 1,200 cuadros):** **30.0 FPS clavados**, **`dropped 0 (discarded 0)`**, `frame time p50 33.33–33.39 ms` / `p99 33.34 ms`, `CPU 0.37–1.30 W`, `wakeups 685–840/s`, `thermal 0`, `brightness 0.55` estables.
+  * Validado por el usuario en dispositivo y promovido como versión estable (`v1.1-oot-wideview-stable`).
 
 
 

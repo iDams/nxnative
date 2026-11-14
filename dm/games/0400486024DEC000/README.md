@@ -235,5 +235,15 @@ From an empty save: at about 45 s `A` (title), `A` (New Game), then the movie. F
 - **LRU Ghost Texture Table (`034e91a8`, Issue #2213, PR #2389):** Replaces fixed 512-ring with LRU ordered ghost table (`GHOST_IDLE=16`, `GHOST_IDLE_SUBS=1,024`, `GHOST_TRIM=32`, `POOL_IDS_MAX=8,192`). Eliminates ghost ring thrashing and 100-490 ms submit thread hitches during area transitions and long play sessions.
 - **Zero Depth Textures by Copy (`4cdd5577`, PR #2306):** Fills single-sample `Depth16Unorm` and `Depth32Float` via zero buffer blit copies instead of clear-only render passes, avoiding Apple driver `kIOGPUCommandBufferCallbackErrorOutOfMemory` crashes on large depth attachments (e.g. 12288x12288) at save loads.
 
+## iOS Stable 21:9 Hor+ Wide View & 30 FPS Tuning (`v1.1-oot-wideview-stable`, 2026-11-13)
+
+- **Hor+ 21:9 Wide View (`DM_WIDE_VIEW=1` default, `b53e81e5`):**
+  - `dm/ios/Sources/front_ios.m` exports window aspect ratio as `DM_WIDE_ASPECT` (`2.173:1` on `956x440` pt iPhone 17 Pro Max) and `dm/host/loader.c` (`dm_fps_state_apply`) writes the 16-aligned dimensions (`3136x1440` output, `2352x1080` handheld) into state offsets `+0x100..+0x114`.
+  - `dm/games/0400486024DEC000/patches.py` (`wide_view`) patches v131072 render sizes, 3D cameras / `sead::PerspectiveProjection`, 2D canvas width, and world-to-layout projection while keeping `DMSH_CHAIN="39417042cfe8"` unchanged.
+  - `dm/gfx/nvn/nvn_mtl.m` keeps non-fullscreen 2D HUD (`3840x2160`) centered at `16:9` via `wide2d_on`/`wide2d_fix` while preserving edge-to-edge fullscreen quads (`ndc_hw >= 0.96`, `|ndc_cx| < 0.05`) and scaling sub-panel `MTLScissorRect`s in `draw_()` around `g_w2d_cx` so the minimap and scroll panels stay aligned.
+- **Verified 30 FPS `Documents/env.txt` Adjustment on iPhone 17 Pro Max (`DM_FRAMEGEN=0`):**
+  - On `21:9`, enabling FrameGen (`DM_FRAMEGEN=1`, `2125x976` via `FG_BUDGET`) added `10.75–11.54 ms` p50 GPU interpolation time on top of `~18.4–19.1 ms` game GPU time, overflowing the `33.3 ms` frame budget and causing frame drops (`14–15` drops/300 frames) and FrameGen pauses (`#1`/`#2`).
+  - Disabling FrameGen (`DM_FRAMEGEN=0`) with `DM_FPS_TARGET=30`, `DM_DYNAMIC_RESOLUTION=1`, `DM_UPSCALER=metalfx`, `DM_THERMAL_CAP=0`, `DM_QOS_MAP=1`, `DM_QOS_EDGES=45,59` restores locked **30.0 FPS** (`0` dropped / `0` discarded across 1,200 consecutive frames `f1201–f2400`, `p99 33.34 ms`, `CPU 0.37–1.30 W`, `wakeups 685–840/s`, `thermal 0`, `brightness 0.55`).
+
 
 
