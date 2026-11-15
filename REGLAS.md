@@ -60,4 +60,5 @@ Estas reglas son obligatorias para cualquier agente o desarrollador que toque es
   - `https://github.com/cheemu21/kid-with-sword-remake/releases` (releases específicas de *Ocarina of Time* Switch 2).
   - `https://github.com/seedds/nxnative` y `https://github.com/seedds/nxnative/pull/1852` (upstream `nxnative`).
   - `https://github.com/LNPANDY/NX2Apple` (parches iOS).
+  - `https://github.com/adi0900/GreenKid-MV` (optimizaciones ARM64/NVN/render para OoT/Switch 2).
   - `https://github.com/Shakoquo/Mako` (clon local `/Users/marco/Mako`, `mako-4.0` — proyecto futuro para PC / referencia de Master Quest y parches OoT `1.1.1`).

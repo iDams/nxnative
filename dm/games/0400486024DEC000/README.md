@@ -267,6 +267,16 @@ From an empty save: at about 45 s `A` (title), `A` (New Game), then the movie. F
   - Removed redundant `DM_FRAMEGEN_MV=1` (`nvn_mtl.m` already enables it by default) and `DM_QOS_EDGES=45,59` (`hle_thread.c` already defaults to `44,59`, covering OoT's `main thread` and `BaseProcExecutor` at priority `44`).
   - Left `DM_FPS_TARGET` (`60` default in `game.tsv`) and `DM_FRAMEGEN` (`off` default) unlocked in `Documents/env.txt` so `60` / `30 FPS` and FrameGen remain selectable from the Launcher UI, keeping only `DM_DYNAMIC_RESOLUTION=1`, `DM_UPSCALER=metalfx`, `DM_THERMAL_CAP=0`, and `DM_QOS_MAP=1`.
 
+## iOS Experimental Upstream Perf Sync (`exp/upstream-perf-sync`, `1d7bd31f` — 2026-11-14)
+
+- **Branch & Build:** `exp/upstream-perf-sync` based on `v1.2-oot-wideview-stable` (`02e6cdda`), preserving `DMSH_CHAIN="39417042cfe8"`, `DM_WIDE_VIEW=1`, and controller auto-hide UI. Compiled and signed as Release (`DMCommit=1d7bd31f306f`, `DM_COPY_ROMFS=NO`) and installed on `iPhone Dams` (`00008150-00190C880E3B401C`); live on-device measurement is pending device unlock.
+- **Graphics, NVN, and PSO Sync (Batches 1–3 & 4C):**
+  - Ported upstream NVN/Metal fixes including cell-indexed `alias_take_over` (`8f221638`), post-clear attachment snapshots (`edf62957`), `nvn_owner.m` and Metal-texture-keyed view cache (`595c4c6e`), indirect-draw pre-conversion (`DM_NVN_IXC_PRE`, `9b720181`), direct MetalFX input/output handling (`e38154cc`), reduced PSO prediction overhead (`e1d7c581`, `bc5a7427`), NVN event signals without closing render passes (`1e385167`), off-submit `ReadTexels` (`ff7fd0bd`), pool spares / UBO patching / dispatch barrier PR #2250 (`1f81f50c`, superseding per-profile `dispatch_overlap on` in `game.tsv`), DisplayLink pacer follow & idle-GPU frame step (`343d0638`), open-fence pool retire & archive serialize/harvest (`31d6ff92`), and hostseg/htab/3D `b2t` readback fixes (`7a85d7e2`).
+  - Integrated 3-level FrameGen (`FF10`, `dm/gfx/msl/fgmv.metal`, `hle_nvn.c`, `nvn_mtl.m`), `mtl_pool_stats`, expanded [`pso_manifest.tsv`](pso_manifest.tsv) (17,870 lines), and fixed a `copy_t2t_enc`/`copy_t2t` regression (`1d7bd31f`) so `bc_alias_copy` returns `nil` without allocating a Metal texture or invoking `gsb_store`.
+- **Host FS, Input & iOS Packaging (Batches 4A–4B):**
+  - Added `.zs` RomFS substitution entries (`romfs_substitute`) in [`game.tsv`](game.tsv) + `hle_fs.c`, `O(N log N)` overlay directory snapshot, `dir_next` `EIO` handling (`e526ad7a`), DualSense/Joy-Con Apple haptics, Shortcuts Amiibo fallback, and `GD` unbound guard in [`dm/ios/tools/build_ipa.sh`](../../../dm/ios/tools/build_ipa.sh) (`026d130d`).
+- **Tests Aligned & Verified on macOS (`1d7bd31f`):** Updated `dm/gfx/tests/t_mesh_first_use.m`, `dm/gfx/tests/t_pool_chunks.m`, and `check_t_upload_src` (`DM_NVN_UP_WINDOWS=0`); `make -C dm/gfx/tests -j8 GAME=0400486024DEC000 run`, `dm/host/tests`, `test_game_profile.py`, `swiftc -parse`, and `dm/ios/tests` passed after the final code edit (`test_docs.py` retains 2 pre-existing documentation/profile-table drift failures).
+
 
 
 

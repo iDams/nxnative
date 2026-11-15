@@ -16,6 +16,9 @@
 > * **Estado Gráfico:** Hierba, follaje, sombras, geometría 3D en `21:9`, menús a pantalla completa y minimapa/HUD centrados completamente estables.
 > * **Cómo volver a una versión estable si un experimento futuro falla:** Ver [Sección 8 (Restauración Rápida a la Versión Estable)](#8-restauración-rápida-a-la-versión-estable-rollback).
 
+> [!NOTE]
+> **RAMA EXPERIMENTAL EN CURSO (`exp/upstream-perf-sync` — 2026-11-14/15):** Compilación Release `1d7bd31f306f` (`DMChain = 39417042cfe8`) con sincronización de lotes `1–4` desde `seedds`, `cheemu` (`FF10`) y `nx2apple` instalada encima en `iPhone Dams`, **pendiente de prueba en vivo** tras desbloquear el dispositivo. Ver [Sección 16](#16-sincronización-experimental-de-rendimiento-expupstream-perf-sync-2026-11-14).
+
 ---
 
 ## 1. Repositorios Base, Referencias Comunitarias y Puntos de Restauración
@@ -26,6 +29,7 @@
 | **nxnative (Upstream)** | `https://github.com/seedds/nxnative.git` | `main` (incluye [PR #1852](https://github.com/seedds/nxnative/pull/1852)) | Repositorio upstream original del motor `dm` (revisar PRs de rendimiento, Metal 4 y `0400486024DEC000`). |
 | **kid-with-sword-remake (cheemu21)** | `https://github.com/cheemu21/kid-with-sword-remake/releases` | Releases (`v22+`) | Builds y parches comunitarios específicos para *Zelda: Ocarina of Time* (Switch 2). Revisar periódicamente sus notas de release y commits embebidos para nuevas optimizaciones de OoT. |
 | **NX2Apple (Frontend & Perfiles)** | `https://github.com/LNPANDY/NX2Apple` | `main` | Frontend comunitario y parches iOS sobre `nxnative`. |
+| **GreenKid-MV (adi0900)** | `https://github.com/adi0900/GreenKid-MV` | Remoto `greenkid` | Fork comunitario con optimizaciones ARM64/NVN/render para OoT y Switch 2. |
 | **Entorno Local del Motor** | Ruta: `/Users/marco/ns` | Local (`main`) | Código fuente del motor (`dm`). |
 | **Entorno del Proyecto Zelda**| Ruta: `/Users/marco/Ocarina` | Local | Workspace con proyecto Xcode, binarios parcheados, shaders y scripts. |
 
@@ -349,6 +353,30 @@ xcrun devicectl device process launch \
   * Desbloqueadas `DM_FPS_TARGET` y `DM_FRAMEGEN` (quitadas de `env.txt`) para poder elegir `60` / `30 FPS` y FrameGen desde el Launcher (`game.tsv` deja `60 FPS` por defecto).
   * Conservadas `DM_DYNAMIC_RESOLUTION=1`, `DM_UPSCALER=metalfx`, `DM_THERMAL_CAP=0` y `DM_QOS_MAP=1` (esta última opcional para ahorro energético en hilos secundarios).
 
+---
 
+## 16. Sincronización Experimental de Rendimiento (`exp/upstream-perf-sync`) (2026-11-14)
+
+> [!WARNING]
+> **Rama experimental (`exp/upstream-perf-sync`) — `main` y `stable/oot-wideview` permanecen en `v1.2-oot-wideview-stable` (`02e6cdda`) hasta validar el comportamiento en dispositivo.**
+
+### 16.1 Motivación
+* En pruebas previas con la compilación `v1.2` dentro del Árbol Deku (`2868x1316`, Metal 4 HUD), se observó caída a **~22 FPS** (`GPU 36.32 ms`, `Frame Interval 45.28 ms`, `App 4.18 GB`, `Available Memory 4.41 GB`), mientras que a `30 FPS` estable (`DM_FRAMEGEN=0`) rendía sin caídas. Se sincronizaron mejoras de `seedds/main`, `cheemu/ff` (`FF10`) y `nx2apple` preservando **`DMSH_CHAIN = "39417042cfe8"`** y todas las características del fork (`DM_WIDE_VIEW`, auto-ocultado del engrane en `DmGamepad.m`, PSO asíncrono `3d0351d7`, `X14` `d182396d`, `4cdd5577`, `a9dc57b8`).
+
+### 16.2 Cambios Integrados por Lotes
+1. **Lote 1 (`edf62957`..`bc5a7427`, `1e385167`, `ff7fd0bd`):** Índice por celda para `alias_take_over` (`8f221638`), snapshots tras `clear` (`edf62957`), capa `nvn_owner.m` + caché de vistas por textura Metal (`595c4c6e`), preconversión de draws indirectos `DM_NVN_IXC_PRE` (`9b720181`), MetalFX con menos copias scratch (`e38154cc`), predicción PSO en el primer miss nuevo sin stand-ins redundantes (`e1d7c581`, `bc5a7427`), señales de eventos NVN sin cerrar render pass (`1e385167`) y `ReadTexels` fuera del hilo submit (`ff7fd0bd`).
+2. **Lote 2 (`1f81f50c`):** Spares en pools, parcheo de UBO (PR #1611/#1808), `dispatch` barrier (PR #2250, reemplazando el ajuste `dispatch_overlap on` de `game.tsv`) y vistas de imagen sRGB (PR #1308).
+3. **Lote 3 (`343d0638`, `31d6ff92`, `7a85d7e2`):** DisplayLink pacer follow (PR #2590), paso de cuadro GPU-inactiva/sin pacer (PR #1942), esperas de copias en snapshots (PR #2153), retiro de pools con fence abierto, serialización/cosecha de archivos PSO, foco `DM_CTL`, reclamo `hostseg` por solapamiento, invalidación `htab` inline, restauración de readback 3D `b2t` y censo VM en crash.
+4. **Lote 4A (`e526ad7a`):** Sustitución de `.zs` dañados en RomFS (`hle_fs.c`, `game.py`, `game.tsv` `romfs_substitute`), snapshot de directorio overlay `O(N log N)` y `EIO` en `dir_next`.
+5. **Lote 4B (`026d130d`):** Háptica DualSense/Joy-Con en Apple (`hle_hid.c`, `haptics_apple.m`), respaldo Amiibo por Shortcuts (`AmiiboScan.swift`, `GameMenu.swift`) y guarda `GD` en `dm/ios/tools/build_ipa.sh`.
+6. **Lote 4C (`1d7bd31f`):** FrameGen de 3 niveles `FF10` (`dm/gfx/msl/fgmv.metal`, `hle_nvn.c`, `nvn_mtl.m`), `mtl_pool_stats`, ampliación de `dm/games/0400486024DEC000/pso_manifest.tsv` (`17,870` líneas) y corrección de regresión en `copy_t2t_enc` / `copy_t2t` (`bc_alias_copy` devuelve `nil` sin crear textura Metal y `gsb_store` solo corre cuando `d != nil`).
+7. **Tests adaptados al fork (`1d7bd31f`):** `t_mesh_first_use.m` (binding `buffer(29)`), `t_pool_chunks.m` (inicialización/liberación bajo `pool_skip_retired=on`) y `check_t_upload_src` en `dm/gfx/tests/Makefile` (`DM_NVN_UP_WINDOWS=0`).
+
+### 16.3 Verificación en macOS e Instalación en `iPhone Dams` (`1d7bd31f306f`)
+* **Tests verificados tras el último cambio de código (`1d7bd31f`):**
+  * `make -C /Users/marco/ns/dm/gfx/tests -j8 GAME=0400486024DEC000 run`: salida `0` (`t_bc_alias` 19/0, `t_cpu_storage` 99/0, `t_mesh_first_use` 53/0, `t_upload_src` 41/0, `t_zskip` 38/0, `t_zsnap`, `check_t_pool_chunks`, `test_dmsh_pull.py` 4 tests OK, `test_tbdr_budget.py` 5 tests OK).
+  * `dm/host/tests` (`t_fs` 156/0, `t_fs_directory` 35/0, `t_hid` 205/0, `t_pad_hid` 27/0, `t_motion` 209/0, `t_haptics`, `t_haptics_apple`, `t_motion_apple`, `t_pad_apple`, `t_amiibo`): todos `PASS`.
+  * `test_game_profile.py` (4 tests OK), `swiftc -parse dm/ios/Sources/*.swift` OK, `dm/ios/tests` (54 tests OK). (`test_docs.py` conserva 2 fallos preexistentes en `docs/agents/game-patches.md` y READMEs faltantes de juegos eliminados).
+* **Compilación e instalación:** `/Users/marco/Ocarina/build/ios/xcode-dd/Build/Products/Release-iphoneos/DmIOS.app` (`DMCommit=1d7bd31f306f`, `DMChain=39417042cfe8`, `DM_COPY_ROMFS=NO`, `CODESIGN OK`), instalada encima en `iPhone Dams` (`bundleID: com.marcoastorga.zeldaoot`). Lanzamiento remoto pendiente por bloqueo del teléfono (`Locked`).
 
 
