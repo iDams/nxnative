@@ -265,6 +265,7 @@ static void read_layout(module_t *m, const char *dir) {
         else if (!strcmp(key, "RO_OFF")) m->ro_off = v;
         else if (!strcmp(key, "DATA_OFF")) m->data_off = v;
         else if (!strcmp(key, "FPS_STATE_OFF")) m->fps_state_off = v;
+        else if (!strcmp(key, "RENDER_SCALE")) m->render_scale_max = (uint32_t)v;
         else if (!strcmp(key, "UE_MALLOC_VT")) m->ue_malloc_vt = v;
         else if (!strcmp(key, "UE_MALLOC_SLOT")) m->ue_malloc_slot = (unsigned)v;
         else if (!strcmp(key, "FPS_TARGET_PTR")) m->fps_target_ptr = v;
@@ -305,21 +306,32 @@ static void read_layout(module_t *m, const char *dir) {
 // (hle_nvn.c fstep_tick)
 uint8_t *dm_fps_state;
 static const char *g_fps_mod;   // the module holding the state page (for the log)
+static float g_render_scale_max = 1.0f;   // the render-scale stub's largest scale (RENDER_SCALE in its fixups table; 1 for a stub that only lowers the game's size)
 static void install_fps_state(module_t *m) {
     if (m->fps_state_off + 0x40 > m->size || m->fps_state_off < m->key_page_off + m->key_page_size) die("%s: frame step state page out of range", m->name);
     dm_fps_state = m->base + m->fps_state_off; g_fps_mod = m->name;
+    if (m->render_scale_max > 1) g_render_scale_max = (float)m->render_scale_max;
 }
 // The settings in the state page, written when the game starts (main.c, after host loading): on iOS the loading runs at app launch, before the launcher has set DM_FPS_TARGET and
 // DM_RENDER_SCALE (Launcher.swift), and nothing reads the page before the game runs
 void dm_fps_state_apply(void) {
+    // Cool mode (DM_COOL=1, the launcher's Cool mode): less GPU work, so a phone keeps its clocks longer. The GPU heats an iPhone 18 Pro most at 30 fps with frame generation
+    // (log 23: the game's own frame 21-24 ms of each 33 ms, the interpolation 2-6 ms more; iOS cut the CPU clock 3.9 -> 1.6 GHz after 145 s). It sets the 3D views to 0.5
+    // (DM_RENDER_SCALE, unless it is already lower) and frame generation's frames to 0.5 of the size shown (DM_FRAMEGEN_SCALE, unless set; about half the pixels of the 1440x810 budget)
+    { const char *c = getenv("DM_COOL");
+      if (c && !strcmp(c, "1")) {
+          const char *r = getenv("DM_RENDER_SCALE"); if (!r || !(atof(r) > 0 && atof(r) <= 0.5)) setenv("DM_RENDER_SCALE", "0.5", 1);
+          if (!getenv("DM_FRAMEGEN_SCALE")) setenv("DM_FRAMEGEN_SCALE", "0.5", 1);
+          LOG("cool mode (DM_COOL=1): render scale %s, frame generation's frames at %s of the size shown", getenv("DM_RENDER_SCALE"), getenv("DM_FRAMEGEN_SCALE")); } }
     if (!dm_fps_state) return;
     const char *e = getenv("DM_FPS_TARGET"); int t = e ? atoi(e) : DM_GAME_FPS_TARGET;
     if (t != 0 && t != 30 && t != 60) { LOG("[RED] DM_FPS_TARGET=%s: must be 0, 30 or 60; using the game's own frame step", e); t = 0; }
     float f = (float)t; memcpy(dm_fps_state, &f, sizeof f);
-    // Render scale of the 3D views (the stubs at Tears of the Kingdom's main+0xd5cc0, Breath of the Wild's main+0x1266880): 1.0 keeps the game's own size and dynamic resolution;
-    // another factor fixes the size at that fraction (DM_RENDER_SCALE, 0.5 to 1.0). Independent of the frame step: written at target 0 too
-    const char *rs = getenv("DM_RENDER_SCALE"); float sc = 1.0f;
-    if (rs) { char *end; sc = strtof(rs, &end); if (end == rs || *end || !(sc >= 0.5f && sc <= 1.0f)) { LOG("[RED] DM_RENDER_SCALE=%s: must be 0.5 to 1.0; keeping the game's size", rs); sc = 1.0f; } else LOG("%s: 3D views rendered at %.2f of the game's size (DM_RENDER_SCALE)", g_fps_mod, sc); }
+    // Render scale of the 3D views (the stubs at Tears of the Kingdom's main+0xd5cc0, Breath of the Wild's main+0x1266880, Hades II's render size): 1.0 keeps the game's own size
+    // and dynamic resolution; another factor fixes the size at that fraction (DM_RENDER_SCALE, 0.25 to the stub's largest scale: 1.0, or above for a stub that also raises it,
+    // Hades II's 3.0). Independent of the frame step: written at target 0 too
+    const char *rs = getenv("DM_RENDER_SCALE"); float sc = 1.0f, hi = g_render_scale_max;
+    if (rs) { char *end; sc = strtof(rs, &end); if (end == rs || *end || !(sc >= 0.25f && sc <= hi)) { LOG("[RED] DM_RENDER_SCALE=%s: must be 0.25 to %.1f; keeping the game's size", rs, hi); sc = 1.0f; } else LOG("%s: 3D views rendered at %.2f of the game's size (DM_RENDER_SCALE)", g_fps_mod, sc); }
     memcpy(dm_fps_state + 0x10, &sc, sizeof sc);
     // Wide view (Ocarina of Time's patches.py wide_view; nxnative PR #1460 by vladbondarenko97, as a launcher setting): DM_WIDE_VIEW=1 with DM_WIDE_ASPECT, the
     // screen's width / height from 1.8 to 2.6 (set by the iOS front end), makes the game's output and render widths follow the screen, multiples of 16: +0x100 u32 the 1440-high width,

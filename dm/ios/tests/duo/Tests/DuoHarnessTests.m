@@ -1,4 +1,5 @@
 #import <XCTest/XCTest.h>
+#import <AVFAudio/AVFAudio.h>
 #import <GameController/GameController.h>
 #import <QuartzCore/CAMetalLayer.h>
 #import <objc/runtime.h>
@@ -11,11 +12,13 @@
 #endif
 #import "DmLayout.h"
 #import "DmGameMenu.h"
+#import "audio_session_policy.h"
 #import "DuoHarnessRuntime.h"
 #include "dm_input.h"
 #include <math.h>
 #include <stdio.h>
 void front_picture_shape(int w, int h);   // front_ios.m (dm/host/front.h)
+void front_ios_audio_session(void);   // front_ios.m
 
 static NSArray<GCController *> *gDuoHarnessControllers;
 static BOOL gDuoHarnessControllerSwizzleInstalled;
@@ -696,7 +699,7 @@ static Class DuoHarnessInstallReservedRegionProbe(UIView *view) API_AVAILABLE(io
     [root.view layoutIfNeeded];
     UIView *game = [root valueForKey:@"game"];
     XCTAssertTrue(dm_setting_live("DM_PICTURE_FIT", NULL) && dm_setting_live("DM_OPMODE", NULL) && dm_setting_live("DM_RUMBLE", NULL)
-                  && dm_setting_live("DM_SHOW_FPS", NULL) && dm_setting_live("DM_TOUCH_HAPTICS", NULL));
+                  && dm_setting_live("DM_SHOW_FPS", NULL) && dm_setting_live("DM_TOUCH_HAPTICS", NULL) && dm_setting_live("DM_AUDIO_MIX", NULL));
     XCTAssertFalse(dm_setting_live("DM_LANG", NULL), @"A setting the game reads once at start is not offered");
     XCTAssertFalse(dm_setting_live("DM_FPS_TARGET", NULL));
 
@@ -716,6 +719,42 @@ static Class DuoHarnessInstallReservedRegionProbe(UIView *view) API_AVAILABLE(io
     UILabel *fps = [root valueForKey:@"fps"];
     XCTAssertNotNil(fps); XCTAssertFalse(fps.hidden);
     dm_setting_live("DM_SHOW_FPS", "0"); XCTAssertTrue(fps.hidden);
+}
+
+- (void)testAudioMixSettingUpdatesAudioSessionAndClearsOption {
+    UIViewController *root = [self harnessRootViewController];
+    XCTAssertNotNil(root);
+    [root.view layoutIfNeeded];
+
+    const char *prev = getenv("DM_AUDIO_MIX");
+    NSString *saved = prev ? @(prev) : nil;
+    @try {
+        unsetenv("DM_AUDIO_MIX");
+        front_ios_audio_session();
+        AVAudioSession *session = AVAudioSession.sharedInstance;
+        XCTAssertEqualObjects(session.category, AVAudioSessionCategoryPlayback);
+        XCTAssertEqual(session.categoryOptions & AVAudioSessionCategoryOptionMixWithOthers, (AVAudioSessionCategoryOptions)0);
+
+        XCTAssertTrue(dm_setting_live("DM_AUDIO_MIX", "1"));
+        XCTAssertTrue(dm_audio_mix_from_env());
+        XCTAssertEqualObjects(session.category, AVAudioSessionCategoryPlayback);
+        XCTAssertNotEqual(session.categoryOptions & AVAudioSessionCategoryOptionMixWithOthers, (AVAudioSessionCategoryOptions)0);
+
+        // Switching back to 0 must explicitly clear AVAudioSessionCategoryOptionMixWithOthers in the shared session
+        XCTAssertTrue(dm_setting_live("DM_AUDIO_MIX", "0"));
+        XCTAssertFalse(dm_audio_mix_from_env());
+        XCTAssertEqualObjects(session.category, AVAudioSessionCategoryPlayback);
+        XCTAssertEqual(session.categoryOptions & AVAudioSessionCategoryOptionMixWithOthers, (AVAudioSessionCategoryOptions)0);
+
+        XCTAssertTrue(dm_setting_live("DM_AUDIO_MIX", "2"));
+        XCTAssertNotEqual(session.categoryOptions & AVAudioSessionCategoryOptionMixWithOthers, (AVAudioSessionCategoryOptions)0);
+        XCTAssertTrue(dm_setting_live("DM_AUDIO_MIX", ""));
+        XCTAssertEqual(session.categoryOptions & AVAudioSessionCategoryOptionMixWithOthers, (AVAudioSessionCategoryOptions)0);
+    } @finally {
+        if (saved) setenv("DM_AUDIO_MIX", saved.UTF8String, 1);
+        else unsetenv("DM_AUDIO_MIX");
+        front_ios_audio_session();
+    }
 }
 
 - (void)testGameViewDrawableHonoursAPixelCap {

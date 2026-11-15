@@ -71,3 +71,10 @@ tex_dirty_upload	on
 amiibo_overlay	on
 # Pool tables give a finalized texture's ID the dummy instead of making its texture again: about 2.5 GB at the house-to-forest change (upstream PR #1393, open)
 pool_skip_retired	on
+# The Render scale slider: a fixed fraction of the game's base size, from 0.25 (Potato) to 1.0; the render-scale stub fixes every value up to 1.0
+render_scale	0.25:1.0:0.05
+render_scale_marks	0.25=Potato
+# The 3D views' size at render scale 1.0, docked then handheld, for the launcher's Render scale row in pixels (settings.py render_base): the game renders its 3D at 65/64 of the
+# output's height times the scale (a Mac run and the owner's iPhone logs at 0.6: handheld 1169x658 for 1920x1080, Wide view's 1432x658 for 2352x1080, docked 1909x877 for 3136x1440)
+# and its width from that height and the output's shape (LauncherSettings.swift rangeLabel takes Wide view's shape from the screen)
+render_base	2599x1462 1949x1097

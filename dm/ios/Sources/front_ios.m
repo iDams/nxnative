@@ -18,6 +18,7 @@
 #import <GameController/GameController.h>
 #import "CloudSaves.h"
 #import "quit_prompt.h"
+#import "audio_session_policy.h"
 
 void dm_gamepad_active(void);
 void dm_gamepad_pads_read(void);
@@ -27,6 +28,7 @@ static void quit_close(void);
 
 void front_ios_boot(void);
 int front_ios_boot_ok(void);
+void front_ios_audio_session(void);
 const char *front_ios_boot_message(void);   // main.m: why a build that keeps the game files off the IPA found none usable (NULL = the generic hint)
 const char *front_ios_device_check(void);   // main.m: why this device cannot run the games (its GPU has no BC textures; NULL = supported); makes the first Metal device
 bool dm_show_launcher(void *view_controller, void (*done)(void));   // Launcher.swift: false = no launcher (no dm/launcher.json, or DM_LAUNCHER=0)
@@ -302,6 +304,14 @@ bool dm_setting_live(const char *env, const char *value) {
     if (!strcmp(env, "DM_SHOW_FPS")) { if (value) [g_root showFPS:atoi(value) != 0]; return true; }
     if (!strcmp(env, "DM_TOUCH_HAPTICS")) { if (value) dm_gamepad_touch_feedback(atoi(value) != 0); return true; }
     if (!strcmp(env, "DM_RUMBLE")) { if (value) { dm_haptics_set_enabled(atoi(value) != 0); LOG("front end: game rumble %s (in-game menu)", atoi(value) ? "on" : "off"); } return true; }
+    if (!strcmp(env, "DM_AUDIO_MIX")) {
+        if (value) {
+            setenv("DM_AUDIO_MIX", dm_audio_mix_env_value(value), 1);
+            front_ios_audio_session();
+            LOG("front end: audio mix %s (in-game menu)", dm_audio_mix_from_env() ? "on" : "off");
+        }
+        return true;
+    }
     return false;
 }
 @interface DmTVSceneDelegate : UIResponder <UIWindowSceneDelegate>
@@ -493,23 +503,24 @@ void front_save_failed(int err) {
 
 // Audio session: the frames RemoteIO asks for in each callback follow the I/O buffer duration, about 21 ms by default on iOS (1024 frames at 48 kHz). The game keeps only 4 blocks × 5 ms = 20 ms in flight,
 // so every callback came up 1.3 ms short and was zero-filled, about 47 gaps per second (crackling; reproducible on the Mac by forcing 1024-frame callbacks: 1999 underruns in 2000 callbacks). Ask for 5 ms and the system picks the nearest it supports;
-// the category is Playback, as a game's or media app's: the ring / silent switch does not mute it (the default SoloAmbient follows the switch, which silenced the game whenever the phone was on silent) and it still interrupts other apps' audio.
+// the category is Playback, as a game's or media app's: the ring / silent switch does not mute it (the default SoloAmbient follows the switch, which silenced the game whenever the phone was on silent) and it interrupts other apps' audio unless DM_AUDIO_MIX=1 opts into AVAudioSessionCategoryOptionMixWithOthers (cleared explicitly to 0 when off so a shared shell keeps each game's setting isolated).
 // Set once at boot and again on return to the foreground (the system may reset it after an interruption)
 static int g_session_off;   // the last activation failed (another app or a call still held the session): tried again when the app becomes active
 void front_ios_audio_session(void) {
     AVAudioSession *s = AVAudioSession.sharedInstance; NSError *e = nil;
+    const char *mix_env = getenv("DM_AUDIO_MIX");
     // With the microphone offered to the game (DM_MIC, mic_apple.m) the category is PlayAndRecord, set here at boot so the game's sound does not change mid-play: the loudspeaker stays
     // the output (not the receiver), Bluetooth headphones keep their music profile (A2DP; the hands-free profile would take their quality), and the silent switch still does not mute it
     if (dm_mic_wanted()) {
-        if (![s setCategory:AVAudioSessionCategoryPlayAndRecord withOptions:AVAudioSessionCategoryOptionDefaultToSpeaker | AVAudioSessionCategoryOptionAllowBluetoothA2DP error:&e])
+        if (![s setCategory:AVAudioSessionCategoryPlayAndRecord withOptions:AVAudioSessionCategoryOptionDefaultToSpeaker | AVAudioSessionCategoryOptionAllowBluetoothA2DP | dm_audio_session_options(mix_env) error:&e])
             LOG("[RED] audio session category (play and record, for the microphone) could not be set: %s", e.localizedDescription.UTF8String);
         dm_mic_prepare();
-    } else if (![s setCategory:AVAudioSessionCategoryPlayback error:&e]) LOG("[RED] audio session category could not be set: %s", e.localizedDescription.UTF8String);
+    } else if (!dm_audio_session_apply(s, mix_env, &e)) LOG("[RED] audio session category could not be set: %s", e.localizedDescription.UTF8String);
     [s setPreferredSampleRate:48000 error:nil];
     if (![s setPreferredIOBufferDuration:0.005 error:&e]) LOG("[RED] audio session I/O buffer duration could not be set: %s", e.localizedDescription.UTF8String);
     g_session_off = ![s setActive:YES error:&e];
     if (g_session_off) LOG("[RED] audio session activation failed: %s", e.localizedDescription.UTF8String);
-    LOG("audio session: sample rate %.0f Hz, I/O buffer %.2f ms (asked for 5 ms)", s.sampleRate, s.IOBufferDuration * 1000);
+    LOG("audio session: sample rate %.0f Hz, I/O buffer %.2f ms (asked for 5 ms), mix %s", s.sampleRate, s.IOBufferDuration * 1000, dm_audio_mix_enabled(mix_env) ? "on" : "off");
 }
 
 // Real audio output is suspended (the silent sink paces the game) while the app is in the background or another audio session has interrupted ours (Siri, an alarm, a call).

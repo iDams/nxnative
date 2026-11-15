@@ -51,9 +51,9 @@ def rows():
         yield n, c + [''] * (9 - len(c))
 
 
-def fixups_keys(path):   # '# KEY<TAB>value' header rows of a rewriter table
-    if not path.is_file(): return set()
-    return {m[1] for m in re.finditer(r'^# (\w+)\t', path.read_text(encoding='utf-8'), re.M)}
+def fixups_keys(path):   # '# KEY<TAB>value' header rows of a rewriter table, as {KEY: value}
+    if not path.is_file(): return {}
+    return {m[1]: m[2].strip() for m in re.finditer(r'^# (\w+)\t(.*)$', path.read_text(encoding='utf-8'), re.M)}
 
 
 UNKNOWN_LANGUAGES = 'This game\'s files do not list its languages, so some of these may not be in the game. It may then show another one.'
@@ -113,6 +113,20 @@ def build(gid, patched, control):
         if not shown(cond, n): continue
         s = {'env': var, 'kind': kind, 'section': section, 'label': label, 'note': note, 'default': value(default, n), **m}
         if var == 'DM_RENDER_SCALE' and base: s['base'] = base   # the render scale in pixels, for the console mode chosen
+        if var == 'DM_RENDER_SCALE':   # a game's own slider (game.tsv render_scale min:max:step, render_scale_default, render_scale_marks value=label,...)
+            rr, rd, rm = g.get('render_scale', ''), g.get('render_scale_default', ''), g.get('render_scale_marks', '')
+            if rr:
+                try: lo, hi, st = (float(x) for x in rr.split(':'))
+                except ValueError: sys.exit(f'{g.id}: render_scale is <min>:<max>:<step>: {rr}')
+                if not (0.25 <= lo < hi <= 1.0 and 0 < st <= hi - lo): sys.exit(f'{g.id}: render_scale must lie within 0.25:1.0 with a step that fits: {rr}')
+                values = rr
+            if rd: s['default'] = rd
+            if rm:
+                marks = [m.split('=', 1) for m in rm.split(',')]
+                if any(len(m) != 2 or not m[1] for m in marks): sys.exit(f'{g.id}: render_scale_marks is value=label,...: {rm}')
+                try: [float(m[0]) for m in marks]
+                except ValueError: sys.exit(f'{g.id}: render_scale_marks values are numbers: {rm}')
+                s['marks'] = marks
         if kind == 'choice':
             opts = [list(l) for l in langs] if values == 'languages' else [v.split('?', 1)[0].split('=', 1) for v in values.split(',') if offered(v, n)]
             if any(len(o) != 2 for o in opts): sys.exit(f'settings.tsv:{n}: choice values are value=label,...')
@@ -121,6 +135,8 @@ def build(gid, patched, control):
             if values == 'languages' and not have: s['note'] = UNKNOWN_LANGUAGES
         elif kind == 'range':
             lo, hi, st = (float(x) for x in values.split(':'))
+            if var == 'DM_RENDER_SCALE' and keys.get('RENDER_SCALE', '1') != '1':   # a stub that also raises the size: up to its largest scale (the rewriter's RENDER_SCALE, hex as every header value)
+                hi = float(int(keys['RENDER_SCALE'], 16))
             s.update(min=lo, max=hi, step=st)
         elif kind == 'toggle':
             if s['default'] not in ('0', '1'): sys.exit(f'settings.tsv:{n}: a toggle defaults to 0 or 1: {s["default"]}')

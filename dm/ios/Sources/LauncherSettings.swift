@@ -11,6 +11,7 @@ struct Setting: Decodable, Identifiable {
     struct Base: Decodable { let docked, handheld: [Int] }
     let options: [[String]]?   // choice: [value, label]
     let min, max, step: Double?   // range
+    let marks: [[String]]?   // range: [value, label] names for values (Ocarina of Time's 0.25, Potato)
     let on, off: String?   // toggle: the values the variable takes (1 / 0 when not given)
     var id: String { env }
     var sectionTitle: String { section ?? "Game" }
@@ -30,14 +31,25 @@ struct Setting: Decodable, Identifiable {
         default: return true
         }
     }
-    enum CodingKeys: String, CodingKey { case env, kind, label, note, def = "default", section, needs, level, base, options, min, max, step, on, off }
+    enum CodingKeys: String, CodingKey { case env, kind, label, note, def = "default", section, needs, level, base, options, min, max, step, marks, on, off }
 }
 struct SettingsFile: Decodable { let settings: [Setting] }
 
 final class LauncherModel: ObservableObject {
+    // The screen's width / height (the iOS launcher sets it from the app's window, as front_ios.m measures it for Wide view), for the render scale's size in pixels with
+    // Wide view on; nil keeps 16:9 (the Mac)
+    static var screenAspect: Double?
+    // This phone's own starting values, and the settings it can't use with why (the iOS launcher sets both before it makes the model, Launcher.swift deviceSetup; the Mac
+    // window leaves them empty). A starting value stands in for the game's default (base): Reset returns to it, and a choice equal to it is not stored. A setting the phone
+    // can't use starts off, whatever was saved, and its row is drawn disabled with the reason
+    static var deviceDefaults: [String: String] = [:]
+    static var unavailable: [String: String] = [:]
     let settings: [Setting]
-    let fixed: Set<String>      // set by an env file or by the launch environment: shown, not changed
-    let fromLaunch: Set<String>   // of those, the ones the launch environment set (a front end's launch overrides, Xcode; DM_ENV_LAUNCH_KEYS from launcher.c or main.m)
+    let fixed: Set<String>      // set by the launch environment: shown, not changed
+    let fromLaunch: Set<String>   // the same set (a front end's launch overrides, Xcode; DM_ENV_LAUNCH_KEYS from launcher.c or main.m)
+    // Set by an env file (Documents/env.txt, the bundle's dm/env.txt; DM_ENV_FILE_KEYS from main.m): the row starts at that value and the player can still move it
+    // (kid-with-sword-remake: an env.txt with DM_RENDER_SCALE no longer locks the Render scale slider). Reset returns to it; a choice equal to it is not stored
+    let fromFile: [String: String]
     let ignoreSaved: Bool   // DM_SAVED_CHOICES=0: start from the defaults, and leave the saved choices as they are
     @Published var values: [String: String] = [:]
 
@@ -48,14 +60,26 @@ final class LauncherModel: ObservableObject {
         self.settings = settings
         let env = ProcessInfo.processInfo.environment
         fromLaunch = Set((env["DM_ENV_LAUNCH_KEYS"] ?? "").split(separator: " ").map(String.init))
-        fixed = fromLaunch.union((env["DM_ENV_FILE_KEYS"] ?? "").split(separator: " ").map(String.init))
+        fixed = fromLaunch
+        var file: [String: String] = [:]
+        for k in (env["DM_ENV_FILE_KEYS"] ?? "").split(separator: " ").map(String.init) where !fromLaunch.contains(k) { file[k] = env[k] }
+        fromFile = file
         ignoreSaved = env["DM_SAVED_CHOICES"] == "0"
         if ignoreSaved { fputs("launcher: saved choices ignored (DM_SAVED_CHOICES=0)\n", stderr) }
         for s in settings {
             if fixed.contains(s.env), let v = env[s.env] { values[s.env] = v; continue }
             let saved = ignoreSaved ? nil : defaults.object(forKey: "launcher." + s.env) as? String   // a string, as launcher.c reads it: not string(forKey:), which turns a number into one
-            values[s.env] = saved.flatMap { s.accepts($0) ? $0 : nil } ?? s.def   // a saved choice the game no longer offers: its default
+            values[s.env] = saved.flatMap { s.accepts($0) ? $0 : nil } ?? base(s)   // a saved choice the game no longer offers: the env file's value or the default
+            if LauncherModel.unavailable[s.env] != nil, s.kind == "toggle" { values[s.env] = s.offValue }
         }
+    }
+    // A row's starting value: the env file's, when it set one the row takes, else this phone's own (deviceDefaults), else the game's default
+    func base(_ s: Setting) -> String {
+        fromFile[s.env].flatMap { s.accepts($0) ? $0 : nil } ?? LauncherModel.deviceDefaults[s.env].flatMap { s.accepts($0) ? $0 : nil } ?? s.def
+    }
+    private func isBase(_ s: Setting, _ v: String) -> Bool {
+        let b = base(s)
+        return s.kind == "range" ? abs((Double(v) ?? .nan) - (Double(b) ?? .nan)) < 1e-6 : v == b   // a slider writes 1.00 for 1.0
     }
 
     var sections: [String] {
@@ -77,19 +101,30 @@ final class LauncherModel: ObservableObject {
     }
     func rows(in section: String, basic: Bool) -> [Setting] { rows(in: section).filter { $0.basic == basic } }
     // A range's label: its percentage, with the size in pixels for the chosen console mode when the list has the base size (the render scale)
-    func rangeLabel(_ s: Setting, _ v: Double) -> String {
-        let p = "\(Int((v * 100).rounded())) %"
+    // With Cool mode on the game draws at 50 % at most (loader.c dm_fps_state_apply), so the render scale's label shows that size
+    func rangeLabel(_ s: Setting, _ chosen: Double) -> String {
+        let cool = s.env == "DM_RENDER_SCALE" && values["DM_COOL"] == "1" && chosen > 0.5
+        let v = cool ? 0.5 : chosen
+        var p = "\(Int((v * 100).rounded())) %" + (cool ? " · Cool Mode" : "")
+        if let name = s.marks?.first(where: { $0.count == 2 && abs((Double($0[0]) ?? -1) - v) < 0.001 })?[1] { p += " · \(name)" }
         guard let b = s.base else { return p }
-        let size = (values["DM_OPMODE"] ?? "1") == "0" ? b.handheld : b.docked
+        let handheld = (values["DM_OPMODE"] ?? "1") == "0", size = handheld ? b.handheld : b.docked
         guard size.count == 2 else { return p }
-        return "\(Int((Double(size[0]) * v).rounded())) × \(Int((Double(size[1]) * v).rounded())) (\(p))"
+        var w = Int((Double(size[0]) * v).rounded()); let h = Int((Double(size[1]) * v).rounded())
+        // Wide view (Ocarina of Time): the output's width follows the screen at 1080 or 1440 tall, a multiple of 16 (loader.c dm_fps_state_apply), and the game takes the 3D
+        // width from the 3D height and the output's shape, rounded down (logs at 0.6: 1432 x 658 for 2352 x 1080, 1909 x 877 for 3136 x 1440)
+        if values["DM_WIDE_VIEW"] == "1", let r = LauncherModel.screenAspect, r >= 1.8, r <= 2.6 {
+            let oh = handheld ? 1080.0 : 1440.0, ow = (oh * r / 16).rounded() * 16
+            w = Int((Double(h) * ow / oh).rounded(.down))
+        }
+        return "\(w) × \(h) (\(p))"
     }
-    var changed: Bool { settings.contains { !fixed.contains($0.env) && !$0.isDefault(values[$0.env] ?? $0.def) } }
+    var changed: Bool { settings.contains { !fixed.contains($0.env) && !isBase($0, values[$0.env] ?? base($0)) } }
 
     // Reset every launcher choice to the game's defaults on the screen; values fixed by an env file or at launch stay. The saved choices are forgotten when Play applies
     // the defaults (apply() keeps no default), so Quit after Reset keeps them, and a choice a launch override hides is kept
     func reset() {
-        for s in settings where !fixed.contains(s.env) { values[s.env] = s.def }
+        for s in settings where !fixed.contains(s.env) { values[s.env] = base(s) }
         fputs("launcher: settings reset to the game's defaults\n", stderr)
     }
 
@@ -97,14 +132,14 @@ final class LauncherModel: ObservableObject {
     // differs from the game's default is stored: a setting the player left at its default follows the defaults of a later build (the settings it was tested with)
     func apply() {
         for s in settings {
-            let v = values[s.env] ?? s.def
-            if fixed.contains(s.env) { fputs("launcher: \(s.env) kept at \(v) (\(fromLaunch.contains(s.env) ? "launch environment" : "env file"))\n", stderr); continue }
+            let v = values[s.env] ?? base(s)
+            if fixed.contains(s.env) { fputs("launcher: \(s.env) kept at \(v) (launch environment)\n", stderr); continue }
             store(s, v)
-            setenv(s.env, v, 1); fputs("launcher: \(s.env)=\(v)\(s.isDefault(v) ? "" : " (changed)")\n", stderr)
+            setenv(s.env, v, 1); fputs("launcher: \(s.env)=\(v)\(isBase(s, v) ? fromFile[s.env] != nil ? " (env file)" : "" : " (changed)")\n", stderr)
         }
     }
     private func store(_ s: Setting, _ v: String) {
-        if !ignoreSaved { if s.isDefault(v) { defaults.removeObject(forKey: "launcher." + s.env) } else { defaults.set(v, forKey: "launcher." + s.env) } }
+        if !ignoreSaved { if isBase(s, v) { defaults.removeObject(forKey: "launcher." + s.env) } else { defaults.set(v, forKey: "launcher." + s.env) } }
     }
 
     // A choice made while the game runs (the iOS in-game menu, GameMenu.swift): saved as Play saves it, so the settings screen shows it at the next start, and put in the environment.
@@ -118,8 +153,8 @@ final class LauncherModel: ObservableObject {
     // DM_LAUNCHER=0: no screen, but the saved choices still apply (only DM_SAVED_CHOICES=0 ignores them); nothing is written
     func applySaved() {
         for s in settings where !fixed.contains(s.env) {
-            let v = values[s.env] ?? s.def
-            if !s.isDefault(v) { setenv(s.env, v, 1); fputs("launcher: \(s.env)=\(v) (saved choice)\n", stderr) }
+            let v = values[s.env] ?? base(s)
+            if !isBase(s, v) { setenv(s.env, v, 1); fputs("launcher: \(s.env)=\(v) (saved choice)\n", stderr) }
         }
     }
 }

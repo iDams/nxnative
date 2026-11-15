@@ -17,7 +17,7 @@ class ResolutionSetting(unittest.TestCase):
                 self.assertEqual(bool(dr),supported)
                 if dr:self.assertEqual((dr[0]['kind'],dr[0]['default']),('toggle','0'))
                 fps=next(s for s in rows if s['env']=='DM_FPS_TARGET')
-                self.assertEqual(fps['default'],'60')
+                self.assertEqual(fps['default'],'30')
                 self.assertEqual(fps['options'],[['30','30 fps'],['60','60 fps']])
 
 class FrameRateOption(unittest.TestCase):
@@ -27,7 +27,7 @@ class FrameRateOption(unittest.TestCase):
             for gid,platform,has in [('04007EF01F8AE000','mac',True),('04007EF01F8AE000','ios',False),('010056B015FE8000','mac',False)]:   # Fortune's Weave (fps_max 120), NieR:Automata (none)
                 with patch.dict(settings.os.environ,{'SETTINGS_PLATFORM':platform}):
                     fps=next(s for s in settings.build(gid,tmp,'unused')['settings'] if s['env']=='DM_FPS_TARGET')
-                self.assertEqual(fps['default'],'60',gid)
+                self.assertEqual(fps['default'],'30' if platform=='ios' else '60',(gid,platform))
                 self.assertEqual(fps['options'],[['30','30 fps'],['60','60 fps']]+([['120','120 fps']] if has else []),(gid,platform))
 
 class UpscalerSetting(unittest.TestCase):
