@@ -215,6 +215,7 @@ __attribute__((weak)) void front_program_handoff(int index, const char *name) { 
 void dm_oe_execute(int index, const void *param, size_t n) {
     char hex[3 * 32 + 1] = ""; for (size_t i = 0; i < n && i < 32; i++) snprintf(hex + 3 * i, 4, " %02x", ((const uint8_t *)param)[i]);
     static prog_plan P; static char *tsv; int have = 0;
+    dm_gfx_quit_begin();   // this program ends: the pipeline archive starts writing now, beside the iPhone's notice (front_program_handoff, 1.5-3 s), and the exit waits for the rest
 #if !TARGET_OS_IPHONE
     const char *pf = getenv("DM_PROGRAMS");
     if (pf && *pf) {

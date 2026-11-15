@@ -69,9 +69,10 @@ DM_GL_STUBS	diagnostic	`=1` gives every GL function the layer lacks a stub that 
 DM_GPU_CAPTURE	diagnostic	`=<frame>[:<frames>]` or `gpu:<ms>[:<after frame>]` writes a Metal GPU trace of those frames for Xcode's Metal debugger; can be set while running through `DM_CTL`
 DM_GPU_CAPTURE_DIR	path	Folder for `DM_GPU_CAPTURE`'s traces (default `gpu_captures/` in the working directory)
 DM_GPU_CAPTURE_KEEP	diagnostic	Before each GPU capture, prunes the capture folder's `dm_*.gputrace` entries so that the newest `KEEP - 1` stay (default 2)
-DM_GUEST_FILE	switch	`1` puts the guest's memory in sparse, unlinked files mapped shared over the guest block, `0` keeps it anonymous (`hle_svc.c`): file pages are out of `phys_footprint`, the figure iOS ends an app at, and the kernel can write them out when it needs the room. Unset: on iOS when the game's memory pool is larger than the room to the memory limit at start (the log's `[mem] guest memory` line says which), off on the Mac. The guest stays anonymous, with a `[RED]` line, when the files cannot be made, or the disk has less than `DM_GUEST_FILE_MIN_FREE` free (on the Mac that plus 8 GB)
+DM_GUEST_FILE	switch	`1` puts the guest's memory in sparse, unlinked files mapped shared over the guest block, `0` keeps it anonymous (`hle_svc.c`): file pages are out of `phys_footprint`, the figure iOS ends an app at, and the kernel can write them out when it needs the room. Unset: on iOS when the game's memory pool and half of it again, for the host's own memory (`DM_GUEST_FILE_HOST`), are larger than the room to the memory limit at start (the log's `[mem] guest memory` line says which), off on the Mac. The guest stays anonymous, with a `[RED]` line, when the files cannot be made, or the disk has less than `DM_GUEST_FILE_MIN_FREE` free (on the Mac that plus 8 GB)
 DM_GUEST_FILE_CHUNK	switch	`=<size>` (whole MB, K / M / G; default 1G, at least 64M, at most 1024 files): the size of each guest file; one file when it is not under the block's size. The stall at the system's periodic flush grows with the file (on a 16 GB M5 Mac up to 148 ms with one 20 GB file, 4 ms with 20 files of 1 GB)
 DM_GUEST_FILE_DIR	path	Folder for `DM_GUEST_FILE`'s files (default the user's temporary folder; the iOS app sets it to `NSTemporaryDirectory()`)
+DM_GUEST_FILE_HOST	switch	`=<size>` (whole MB, K / M / G; `0` for none): the host's own memory that the iOS rule for `DM_GUEST_FILE` counts beside the game's memory pool, instead of half the pool (`hle_svc.c`, `guest_host_margin`; measured from a tenth of the pool to all of it)
 DM_GUEST_FILE_MIN_FREE	switch	`=<size>` (whole MB, K / M / G; default 2G, `0` never): with `DM_GUEST_FILE=1`, the game is stopped (exit code 87) when the guest files' disk has less room than that: its free space less what the files' dirty pages may still take. When `f_bavail` alone is short it counts what the system can purge (`NSURLVolumeAvailableCapacityForImportantUsageKey`), as long as `f_bavail` keeps half the minimum
 DM_GUEST_FILE_PUNCH	switch	`0` keeps the disk blocks of guest memory the game gives back (with `DM_GUEST_FILE=1`); by default they are punched out (`F_PUNCHHOLE`, which also drops the pages): the heap's at once, the alias region's by a sweep every 10 s once they have stayed given back over a whole interval
 DM_GUEST_FILE_SCAN	diagnostic	`=1` (with `DM_GUEST_FILE=1`): every 30 s a `[mem] guest file scan` line, the dirty guest pages by region (heap, alias, stack, other) and how many of them read all 0
@@ -102,7 +103,7 @@ DM_LINK_VTICK	switch	`0` keeps the system's display-link rate on 144 or 165 Hz M
 DM_LOADHASH	diagnostic	`=1` logs an address-independent SHA-256 per module after loading
 DM_LONGFRAME	diagnostic	`0` turns off the long-frame log (on by default), a line for a frame over 20 ms or with GPU time over 16.7 ms that is clearly above recent frames
 DM_MEASURE_LOCK	path	`=<file>`: `scripts/regress.py`'s default `--lock`, the measuring lock `scripts/bench.py --lock` shares: held only while a game runs, and the harness's shader builds pause while another process holds it
-DM_MEMSTAT	diagnostic	`=<tsv>` writes one line per second of memory accounting: footprint, Metal allocation and resident and charged memory by region class (guest, code, malloc, gpu, …)
+DM_MEMSTAT	diagnostic	`=<tsv>` writes one line per second of memory accounting: footprint, Metal allocation and resident and charged memory by region class (guest, code, malloc, gpu, …); on iOS a relative path is under `Documents`, and `Documents/env.txt` can set it
 DM_MEMSTAT_DUMP	diagnostic	`=<seconds>`: with `DM_MEMSTAT`, at that second writes every VM region of 1 MiB or more to `<tsv>.regions`
 DM_MEM_CAP_GB	switch	`=<GB>`: the memory watchdog exits when resident memory exceeds that many GB (default 24 on the Mac, none on iOS; `0` turns it off)
 DM_METAL_CAPTURE	diagnostic	`=1` makes `build_ipa.sh` produce a build that can write GPU frame captures (`MetalCaptureEnabled` in `Info.plist`), for `DM_GPU_CAPTURE`
@@ -290,6 +291,7 @@ DM_PROGRAM	switch	`=<index>`: the program of a game of several programs that a h
 DM_PROGRAMS	path	Table of a game's programs on the Mac (`programs.tsv`: index, host, modules, run folder, environment): `oe::ExecuteProgram` starts the named one in this process's place; the NSP script's run command and the Mac app set it
 DM_PROGRAM_ID	switch	`=<hex>`: the program ID the host reports from `svcGetInfo(ProgramId)` (default: the profile's `program_id`)
 DM_PSO_ARCHIVE	path	The folder of the per-game Metal 4 pipeline archive of pipeline bases (default `pso_archive/` beside `pso_user.tsv`); `off` keeps no archive
+DM_PSO_ARCH_WARM_FLUSH_MS	switch	`=<ms>`: during a prewarm the game plays through (no prepare step) that is not compacting, the timer's flush hands the archive's period over once it is that old, then twice as long each time up to 16 times (default 60000; `0`: no flush until the prewarm ends or the period is full)
 DM_PSO_BUNDLE	path	The pipeline archive made offline (`<GPU architecture>.mtl4a`, `prebuilt.tsv`), read only; the iOS app and Mac launcher set it to their `pso/` folder; `off` ignores it
 DM_PSO_GPUS	switch	`build_ipa.sh`: the GPU architectures, comma-separated, to build the offline pipeline archive for (`none` builds none); unset, a profile with `pso_mtl4 on` gets its `pso_gpu` list or `g18p` when absent; profiles with `pso_mtl4 off` get none
 DM_PSO_HYBRID	switch	`0`: a draw whose pipeline is not built yet waits for it instead of drawing with its shader pair's pulling pipeline meanwhile (on by default with the Metal 4 path)
@@ -381,6 +383,7 @@ DM_TEST_LEAK_GPU	diagnostic	`=1` allocates and keeps a 1 MB shared Metal buffer 
 DM_TEST_LINK_STALL	diagnostic	`=<start s>,<duration s>`: counting from the first present, pauses the display link at that point for that long, to check the present fallback
 DM_TEST_NO_METAL4	diagnostic	`=1` treats the GPU as one without Metal 4, as on a virtual Mac: the NVN layer starts only its classic part and drops every present
 DM_TEST_PRESENT_LAG	diagnostic	`=<every n>,<ms>[,<in a row>][;…]` sleeps that long before every nth present (and the ones after it in the run): a slow frame on demand
+DM_TEST_STUCK_DRAW	test	In t_pso_archive's SIGTERM and hand-over cases, holds a draw in the graphics layer (dm_gfx_enter with no leave) so the graceful exit's drain never returns
 DM_TEST_SWKBD_HOLD_MS	diagnostic	`=<ms>` (with `DM_KBD`) keeps the system keyboard up that long before `DM_KBD`'s text is returned, as a player typing would
 DM_TEST_SWKBD_LAG_MS	diagnostic	`=<ms>` sleeps that long between the keyboard handing back its text and the game's thread getting the result, to check that auto-accept does not act early
 DM_TEST_TRANSFORM_FEEDBACK	test	Path to the native t_transform_feedback executable used by the Python feedback tests
@@ -388,9 +391,9 @@ DM_TEST_UP_LEAK	diagnostic	`=1` keeps the old upload staging block instead of re
 DM_TEST_UP_LOST	diagnostic	`=<batch index>` treats that batch of uploads as dropped, to exercise the re-upload path
 DM_THERMAL_CAP	switch	`0` turns off the thermal cap, which holds the frame step at 30 fps while iOS reports a serious or critical thermal state (on by default)
 DM_THR	diagnostic	`=1` logs each SVC (except `SleepThread`) with its first four arguments, and each `CreateThread` with entry, stack, priority and core
-DM_THRCPU	diagnostic	`=<tsv path>[,<seconds>]` writes each thread's CPU time (100% = one core) and the total every interval (default 10 s); on iOS a relative path is under `Documents`
+DM_THRCPU	diagnostic	`=<tsv path>[,<seconds>]` writes each thread's CPU time (100% = one core) and the total every interval (default 10 s); on iOS a relative path is under `Documents`, and `Documents/env.txt` can set it
 DM_TOUCH_HAPTICS	player	`0` turns off the light haptic tap when a touch control is pressed (on by default); launcher setting
-DM_TOUCH_LOG	diagnostic	`=1` logs each touch-screen read with touch points (sample, finger, position, attributes) and each gesture entry, up to 500 lines
+DM_TOUCH_LOG	diagnostic	`=1` logs each touch-screen sample with touch points (sample, finger, position, attributes) and each gesture entry, up to 500 lines
 DM_UDC_SELFTEST	diagnostic	`=1` runs a start-up check of DontCare load and store on private depth-stencil and RGBA8 textures (clear, Load + DontCare, read back) and logs one result line
 DM_UE_SHADERS	path	Folder of the Unreal shader code archives decoded by `uepak.py`, for `shader_split.py` (default `ue_shaders` beside the RomFS); needed when the RomFS has Unreal paks
 DM_UE_TEXTURE_POOL	switch	Megabytes Unreal's texture streaming pool (`r.Streaming.PoolSize`) is raised to, overriding the profile's `ue_texture_pool`; `0` keeps the game's own pool. On iOS only this switch turns it on (`Documents/env.txt`)
@@ -398,6 +401,7 @@ DM_UPSCALER	player	`metalfx` draws the game's own upscaler shaders (agl's NDSR n
 DM_VK_CAPTURE	path	`=<dir>` (Mac) writes every SPIR-V module the game creates to `<dir>/<key>.spv`; the NSP script's Vulkan shader capture stage sets it
 DM_VK_LOG	diagnostic	`=1` logs Vulkan object creation in the Vulkan-on-Metal layer
 DM_VSYNC_HZ	switch	`=<Hz>`: rate at which a host thread fires the vi vsync event when the display link does not drive it (default 60)
+DM_WAKE_UNLOCKED	switch	`0` signals a woken guest thread while the waker still holds the thread lock, as before; by default the signal comes after the lock is let go, so the woken thread does not sleep again on it ([Wakes signalled after the scheduler lock is let go](reference/threads.md#wakes-signalled-after-the-scheduler-lock-is-let-go))
 DM_WATCH	diagnostic	`=<s>` dumps all threads after that many seconds (SIGALRM) and turns on the stall watchdog; off unless set
 DM_WATCH_SAMPLE	diagnostic	`=<path>` (Mac): when the stall watchdog fires, samples the process for 1 s with `/usr/bin/sample` and writes the thread stacks to that path
 DM_WATCH_STALL	diagnostic	`=<s>`: when the frame loop makes no progress for that long (default 15 with `DM_WATCH`), logs a red line, dumps the threads and exits
