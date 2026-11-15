@@ -43,7 +43,7 @@ Estas reglas son obligatorias para cualquier agente o desarrollador que toque es
 
 ## 4. Build y rendimiento
 
-- Perfil actual: `0400486024DEC000`, cadena `39417042cfe8`, `fps_target 60`, `op_mode handheld`, `DM_GUEST_FILE=1`, corte NDVE en `patches.py`.
+- Perfil actual: `0400486024DEC000`, cadena `39417042cfe8`, `fps_target 60` (`dm/games/settings.tsv` arranca en Launcher iOS a `30 fps` y escala `0.6` por defecto salvo ajuste manual), `op_mode handheld`, `DM_GUEST_FILE=1`, corte NDVE en `patches.py`.
 - iOS: biblioteca `.img` en `shader/ios/b-<chain>.img`; Mac: `shader/mac/`. No mezclar cadenas.
 - La biblioteca instalada es la **completa** (42.848 shaders, `shader/ios/b-39417042cfe8.img`, 5,4 GB, sello `inputs 4bd48f723876` dentro de la imagen). No sustituirla por el antiguo set parcial de la ruta: causaba `failed to load shader` y caídas a ~7 fps.
 - El frame step puede bajar a 20/30 fps por coste de encode CPU (~18,5 ms) aunque la GPU tenga margen; no confundirlo con shaders ausentes. Medir con el log (`timing up to frame`, `frame step`).

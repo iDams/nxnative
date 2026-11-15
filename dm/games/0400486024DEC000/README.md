@@ -290,6 +290,15 @@ From an empty save: at about 45 s `A` (title), `A` (New Game), then the movie. F
   - Added `.zs` RomFS substitution entries (`romfs_substitute`) in [`game.tsv`](game.tsv) + `hle_fs.c`, `O(N log N)` overlay directory snapshot, `dir_next` `EIO` handling (`e526ad7a`), DualSense/Joy-Con Apple haptics, Shortcuts Amiibo fallback, and `GD` unbound guard in [`dm/ios/tools/build_ipa.sh`](../../../dm/ios/tools/build_ipa.sh) (`026d130d`).
 - **Tests Aligned & Verified on macOS (`1d7bd31f`):** Updated `dm/gfx/tests/t_mesh_first_use.m`, `dm/gfx/tests/t_pool_chunks.m`, and `check_t_upload_src` (`DM_NVN_UP_WINDOWS=0`); `make -C dm/gfx/tests -j8 GAME=0400486024DEC000 run`, `dm/host/tests`, `test_game_profile.py`, `swiftc -parse`, and `dm/ios/tests` passed after the final code edit (`test_docs.py` retains 2 pre-existing documentation/profile-table drift failures).
 
+## iOS Upstream Perf & Launcher Sync (Batches 5A–5C — 2026-11-15)
+
+- **Batches 5A–5B (`f37d41ed`, `2524558d`):** Synced dirty-page construction & slot-pinning (`nvn_dirty.c`), 4 ms touch grid (`hle_touch.c`), lifecycle PSO archive flush (`hle_lifecycle.c`), `guest_host_margin`, NVN queue batching (`nvn_queue.inc`), present link drain (`nvn_link_drain.h`), LRU render-target recycling (`nvn_rt_recycle.h`), frame-step margin fix (`nvn_fstep.h`), and Metal 4 / DLSS fixes while keeping `DMSH_CHAIN="39417042cfe8"` unchanged.
+- **Batch 5C (`5fed070a` — `cheemu/ff` FF11 + `nx2apple`):**
+  - Added **Cool Mode** (`DM_COOL=1` capping render/framegen scale to `0.5` in `loader.c`, auto-enabled on `< 10 GB` RAM iPhones), widened render scale range in [`game.tsv`](game.tsv) (`render_scale 0.25:1.0:0.05`, `render_scale_marks 0.25=Potato`, `render_base 2599x1462 1949x1097`), and updated iOS Launcher defaults in [`settings.tsv`](../settings.tsv) (`DM_FPS_TARGET=30`, `DM_RENDER_SCALE=0.6`, keeping `game.tsv` `fps_target=60`).
+  - Added `fg_menu_pause()` (`DM_FRAMEGEN_MENU_PAUSE`) and copy-queue error logging in `nvn_mtl.m`, `LauncherHome` + `HeatDial` UI (`dm/ios/Sources/LauncherHome.swift`), and `DM_AUDIO_MIX` audio session sharing (`dm/ios/Sources/audio_session_policy.h`, `front_ios.m`).
+  - Preserved all fork-only features (`DM_WIDE_VIEW=1`, `DmGamepad.m` gear auto-hide + 4 s touch reveal, `AmiiboScan` + `dm_quit_menu()`, `main.m` `DM_OPMODE=0` / `DM_GUEST_FILE=1`, and `game.tsv` `romfs_substitute`, `amiibo_overlay`, `gpu_timestamps`, `link_latency30`, `fps_payback`, `present_snap`).
+- **Verified at `5fed070a`:** `swiftc -typecheck` (0 errors), `make -C dm/gfx/tests -j8 GAME=0400486024DEC000 run` (exit 0), `make -C dm/host/tests -j8 GAME=0400486024DEC000 run` (exit 0), and 89 Python `unittest` cases (`OK`).
+
 
 
 

@@ -17,7 +17,7 @@
 > * **Cómo volver a una versión estable si un experimento futuro falla:** Ver [Sección 8 (Restauración Rápida a la Versión Estable)](#8-restauración-rápida-a-la-versión-estable-rollback).
 
 > [!NOTE]
-> **RAMA EXPERIMENTAL EN CURSO (`exp/upstream-perf-sync` — 2026-11-14/15):** Compilación Release `1d7bd31f306f` (`DMChain = 39417042cfe8`) con sincronización de lotes `1–4` desde `seedds`, `cheemu` (`FF10`) y `nx2apple` instalada encima en `iPhone Dams`, **pendiente de prueba en vivo** tras desbloquear el dispositivo. Ver [Sección 16](#16-sincronización-experimental-de-rendimiento-expupstream-perf-sync-2026-11-14).
+> **RAMA EXPERIMENTAL EN CURSO (`exp/upstream-perf-sync` — 2026-11-15):** Sincronizados los lotes `1–5C` (`f37d41ed`, `2524558d`, `5fed070a`) desde `seedds`, `cheemu` (`FF11`) y `nx2apple` preservando **`DMSH_CHAIN = "39417042cfe8"`**, `DM_WIDE_VIEW=1` y el auto-ocultado del engrane en `DmGamepad.m`, con todas las suites de macOS en verde y listo para compilar e instalar en `iPhone Dams`. Ver [Sección 16](#16-sincronización-experimental-de-rendimiento-expupstream-perf-sync-2026-11-14).
 
 ---
 
@@ -378,5 +378,21 @@ xcrun devicectl device process launch \
   * `dm/host/tests` (`t_fs` 156/0, `t_fs_directory` 35/0, `t_hid` 205/0, `t_pad_hid` 27/0, `t_motion` 209/0, `t_haptics`, `t_haptics_apple`, `t_motion_apple`, `t_pad_apple`, `t_amiibo`): todos `PASS`.
   * `test_game_profile.py` (4 tests OK), `swiftc -parse dm/ios/Sources/*.swift` OK, `dm/ios/tests` (54 tests OK). (`test_docs.py` conserva 2 fallos preexistentes en `docs/agents/game-patches.md` y READMEs faltantes de juegos eliminados).
 * **Compilación e instalación:** `/Users/marco/Ocarina/build/ios/xcode-dd/Build/Products/Release-iphoneos/DmIOS.app` (`DMCommit=1d7bd31f306f`, `DMChain=39417042cfe8`, `DM_COPY_ROMFS=NO`, `CODESIGN OK`), instalada encima en `iPhone Dams` (`bundleID: com.marcoastorga.zeldaoot`). Lanzamiento remoto pendiente por bloqueo del teléfono (`Locked`).
+
+### 16.4 Sincronización Lotes 5A–5C (`f37d41ed`, `2524558d`, `5fed070a` — 2026-11-15)
+* **Lote 5A (`f37d41ed`):** Constructor/slot-pinning de páginas sucias (`dm/gfx/nvn/nvn_dirty.c`, `t_dirty_init.c`, `t_dirty_reuse.c`), wake sin lock y planificación/eventos (`dm/host/hle_svc.c`, `dm/host/hle_thread.c`), rejilla táctil de `4 ms` (`dm/host/hle_touch.c`), vaciado del archivo PSO en lifecycle (`dm/host/hle_lifecycle.c`, `t_pso_archive.m`, `test_pso_archive.py`), `guest_host_margin` y notas actualizadas en `dm/games/0400486024DEC000/README.md`.
+* **Lote 5B (`2524558d`):** Agrupación de colas NVN (`dm/gfx/nvn/nvn_queue.inc`), drenaje en present (`dm/gfx/nvn/nvn_link_drain.h`), LRU de reciclaje de render targets (`dm/gfx/nvn/nvn_rt_recycle.h`), tiled resolves / Metal 4 / DLSS (`nvn_mtl.m`, `nvn_owner.m`, `hle_nvn.c`, `nvn_rec.h`), corrección de margen en `nvn_fstep.h`, más restauración/ajuste de pruebas (`DM_PRESENT_SNAP=0` en `check_t_present_rescue` de `dm/gfx/tests/Makefile` y regla `$(B)/t_input_stream` en `dm/host/tests/Makefile`).
+* **Lote 5C (`5fed070a` — `cheemu/ff` FF11 + `nx2apple`):**
+  * **Cool Mode y Render Scale (`dm/host/dm.h`, `dm/host/loader.c`, `dm/games/settings.py`, `dm/games/settings.tsv`, `dm/games/0400486024DEC000/game.tsv`):** `DM_COOL=1` fuerza `DM_RENDER_SCALE=0.5` y `DM_FRAMEGEN_SCALE=0.5` en `dm_fps_state_apply`; validación `0.25f <= sc && sc <= hi`; en `game.tsv` se agregan `render_scale 0.25:1.0:0.05`, `render_scale_marks 0.25=Potato` y `render_base 2599x1462 1949x1097` (conservando `fps_target 60`, `op_mode handheld`, `romfs_substitute`, `amiibo_overlay`, `gpu_timestamps`, `link_latency30`, `fps_payback`, `present_snap`).
+  * **Pausa automática de FrameGen en menú (`dm/gfx/nvn/nvn_mtl.m`):** `fg_menu_pause()` (`DM_FRAMEGEN_MENU_PAUSE`: pausa por debajo de `300` draws durante `6` presents tras armarse a los `900` frames y reanuda tras `2` presents), bandera `dm.framegen.unsupported` en `fg_on`, y logging de los primeros `8` errores en `q_cb` (`addCompletedHandler`).
+  * **Nuevo Launcher iOS (`LauncherHome.swift`, `Launcher.swift`, `LauncherRow.swift`, `LauncherSettings.swift`, `GameMenu.swift`, `build_ipa.sh`):** Pantalla inicial con dial `HeatDial`, tiles rápidos `QuickTile`, cajón `AllSettingsDrawer` con pestaña `Look` (`LauncherBackgroundStore`) y soporte `DM_LAUNCHER_BG`/`DM_LAUNCHER_TITLE`; defaults iOS en `settings.tsv` a `DM_FPS_TARGET=30` y `DM_RENDER_SCALE=0.6`, además de `deviceSetup()` (`DM_COOL=1` bajo `< 10 GB` RAM). Se mantienen intactos `AmiiboScan`, `dm_quit_menu()`, `DmGamepad.m` y `main.m`, sin importar `SaveSyncReport` ni `DM_PAD_THEME`.
+  * **Audio Mix (`dm/ios/Sources/audio_session_policy.h`, `front_ios.m`):** Soporte en vivo para `DM_AUDIO_MIX` mediante `dm_audio_session_options` / `dm_audio_session_apply` en `front_ios_audio_session`, preservando `dm_mic_wanted()`.
+* **Verificación en macOS tras los ajustes de test (`5fed070a`):**
+  * Actualizados `dm/ios/tests/launcher_storage_check.swift` (para el default iOS `30 fps` / `0.6`) y `dm/tools/tests/test_dmsh_abi.py` (`KINDS` excluye `"?"` de logs).
+  * `xcrun --sdk iphoneos swiftc -typecheck ... DmIOS/Sources/*.swift`: `0` errores.
+  * `make -C dm/gfx/tests -j8 GAME=0400486024DEC000 run`: salida `0`.
+  * `make -C dm/host/tests -j8 GAME=0400486024DEC000 run`: salida `0`.
+  * Suite Python (`13` módulos de iOS, settings, launcher, ABI, `env_switches`, C lint y arquitectura): `89` tests `OK`.
+  * `test_docs.py Length GameNotes`: `OK` (`Links` conserva `13` referencias previas de upstream a juegos/secciones ausentes en este fork).
 
 
