@@ -77,7 +77,7 @@ typedef struct {
                                          // +0x10 is left to the game: its inlined NVN header code writes byte 1 here after AddCommandMemory and before BeginRecording / CallCommands (an internal flag of real NVN; main+0x4da5c, main+0xb8dec etc.).
                                          // This used to be the low byte of end: rewritten to 01 it cut the segment end by up to 254 bytes, and SMBW's material setup handles (512-byte blocks at minimum) kept overflowing into host segments at the iPhone's addresses
     uint8_t *end;                        // End of the current command memory segment
-    uint8_t *begin;                      // First record of this recording (its handle); recording 2 = not written yet
+    uint8_t *begin;                      // First record of this recording; recording 2 = not written yet
     PFNNVNCOMMANDBUFFERMEMORYCALLBACKPROC cb; void *cb_data;
     NVNdevice *dev;
     uint64_t used;                       // Bytes written since the game last added command memory, across recordings and host segments, including segment-switch JUMPs (returned by GetCommandMemoryUsed)
@@ -85,7 +85,9 @@ typedef struct {
     size_t ctl_size;                     // Bytes in the last control memory block supplied by the game (the host records no control commands)
     int64_t copy_row, copy_image;        // SetCopyRowStride / SetCopyImageStride: state of the command buffer, written into each buffer <-> texture copy (p_copy_strides), not recorded
     size_t cmd_size;                     // GetCommandMemorySize: the bytes the game last passed to AddCommandMemory, as in NVN; a host-lent segment leaves it (see there)
-    uint64_t rec_id;                     // The current or last recording's serial (hle_nvn.c BeginRecording): its own host-lent segments are not freed by its own writes (hostseg_written)
+    uint32_t rec_id;                     // The current or last recording's serial (hle_nvn.c BeginRecording): its own host-lent segments are not freed by its own writes (hostseg_written)
+    uint32_t own_back;                   // end - the recording's first byte in the current segment: its first record there, or the write position where a record did not fit (0 = none yet);
+                                         // a segment the host lends hangs off [that byte, write position) (hle_nvn.c cmd_own, hostseg_take)
 } cmd_t;                                                                                   FITS(cmd_t, NVNcommandBuffer);
 
 // ---------- State objects (defaults follow the NVN / GL defaults) ----------
@@ -252,6 +254,7 @@ int mtl_warm_wait(int timeout_ms);
 int mtl_link_active(void);
 int mtl_link_wait_tick(int vsyncs, uint64_t timeout_ns);   // vsyncs = the game's present interval
 int mtl_link_wait_ticks(int ticks, uint64_t timeout_ns);   // the same in the display link's own ticks
+uint64_t mtl_link_drain_take_ns(void);   // nanoseconds those waits spent letting standing frames out of the present queue since the last call (nvn_link_drain.h)
 int mtl_link_rate(void);   // the display link's rate: 120, 60 or 30 Hz
 void mtl_link_mode_set(int mode);   // the display link's pacing mode (DM_PRESENT_LINK's values), applied at the next present
 double mtl_presented_time(uint64_t n);

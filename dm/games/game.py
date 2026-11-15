@@ -101,10 +101,12 @@ def by_build(main_id):   # the profile whose build rows register this main build
     return next((g for g in all_games() if any(b.get('main') == main_id for b in g.builds().values())), None)
 
 
-# agl's upscaler network (NDSR), by where the shader map found each key: the compute shaders of agl_ndsr.pck (Donkey Kong Bananza's 24 in its release library, Splatoon Raiders' 20 in its debug one)
-UPSCALER_SOURCE = re.compile(r'/agl_ndsr\.pck#')
+# The upscaler network (NDSR), by where the shader map found each key: the compute shaders of an NDSR pack (shader_split.py ndsr_shaders: a source ending in #NDSR@<offset>), whatever
+# ships it. The pack is a library several engines carry under their own names: agl's agl_ndsr.pck (Donkey Kong Bananza, Splatoon Raiders, Mario Kart World, Nintendo Switch Sports Resort),
+# Kirby Air Riders' and Fast Fusion's .ndsr files (the same 20 networks), Star Fox's nested in a VIPR container (Splatoon Raiders' 20), and the pack inside nn::ndve's movie file.
+UPSCALER_SOURCE = re.compile(r'#NDSR@0x[0-9a-f]+$')
 # agl's chained upscaler (NDSR VR): the compute shaders of agl_ndsr_vr.pck and agl_ndsr_vr_light.pck (Ocarina of Time's 20 and 17). Four dispatches a frame, not one: three that pack the
-# frame's colour into images only the chain reads, then the network, which writes the output picture (nvn_mtl.m up_chain_dispatch)
+# frame's colour into images only the chain reads, then the network, which writes the output picture (nvn_mtl.m up_chain_dispatch). Kept disjoint from UPSCALER_SOURCE so the chain skips its pre-passes
 UPSCALER_CHAIN_SOURCE = re.compile(r'/agl_ndsr_vr(_light)?\.pck#')
 
 
@@ -214,7 +216,8 @@ def header_one(g):
     if vcr not in ('on', 'off'): sys.exit(f'{g.id}: vconv_range must be on or off: {vcr}')
     mml = g.get('mem_map_limit', 'off')   # MapPhysicalMemory refused beyond the application pool, as on Horizon (hle_svc.c): on / off
     if mml not in ('on', 'off'): sys.exit(f'{g.id}: mem_map_limit must be on or off: {mml}')
-    ups, chain = upscaler_keys(g), upscaler_keys(g, UPSCALER_CHAIN_SOURCE)   # the game's own upscaler shaders, which DM_UPSCALER=metalfx (the launcher's Game's upscaler) replaces with MetalFX's spatial scaler (nvn_mtl.m up_mfx_encode)
+    chain = upscaler_keys(g, UPSCALER_CHAIN_SOURCE); chain_set = set(chain)
+    ups = [k for k in upscaler_keys(g) if k not in chain_set]   # the game's own upscaler shaders, which DM_UPSCALER=metalfx (the launcher's Game's upscaler) replaces with MetalFX's spatial scaler (nvn_mtl.m up_mfx_encode)
     dbr = g.get('draw_barriers', 'full')   # how draw passes are ordered (nvn_mtl.m barrier_game): full = each waits for all earlier GPU work, game = by the game's own barriers, so vertex work overlaps the previous pass's fragments
     if dbr not in ('full', 'game'): sys.exit(f'{g.id}: draw_barriers must be full or game: {dbr}')
     gts = g.get('gpu_timestamps', 'submission')   # counter timestamps (nvn_mtl.m rep_ticks): submission = one time per submission, segment = the GPU start / end of the segment holding the report

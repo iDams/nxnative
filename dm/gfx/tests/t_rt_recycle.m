@@ -105,6 +105,93 @@ int main(void) { @autoreleasepool {
         settle();
         CHECK(waiting() == 1, "its heap waits once the snapshot is freed");
     }
+    {   // iOS adaptive policy: drain on <768 MiB, exact allocation, max_entry rejection, >64 batch drain, and pressure trim
+        rh_test_set(1, 1, 512ull << 20, 0);
+        rh_trim();
+        CHECK(waiting() == 0 && g_rh_bytes == 0, "switching to <768 MiB on iOS drains waiting heaps at once");
+
+        rh_test_set(1, 1, 2048ull << 20, 0);
+        tex_t ios_a = target(&pool, 95100, 0, 640, 360); mtl_tex_init(&ios_a);
+        id<MTLTexture> tia = tex_mtl(&ios_a);
+        MTLSizeAndAlign need_a = [g_dev heapTextureSizeAndAlignWithDescriptor:tex_desc(&ios_a, 0)];
+        CHECK(tia && tia.heap && tia.heap.size >= need_a.size && tia.heap.size < need_a.size + need_a.size / 8, "iOS allocates exact placement heap without +12.5 percent headroom");
+        id<MTLHeap> ios_heap = tia.heap;
+        tia = nil; mtl_tex_release(&ios_a); mtl_alias_drop_pool(&pool); settle();
+        CHECK(waiting() == 1, "iOS heap within budget pools after release");
+
+        tex_t ios_b = target(&pool, 95101, 8 << 20, 632, 356); mtl_tex_init(&ios_b);
+        id<MTLTexture> tib = tex_mtl(&ios_b);
+        CHECK(tib && tib.heap == ios_heap && waiting() == 0, "smaller iOS target reuses the pooled exact heap");
+        tib = nil; mtl_tex_release(&ios_b); mtl_alias_drop_pool(&pool); settle();
+        rh_test_set(1, 1, 512ull << 20, 0);
+        rh_trim();
+        CHECK(waiting() == 0, "pooled iOS heap drains before entry-cap test");
+
+        // Single-entry cap rejection under [768 MiB, 1024 MiB) where max_entry_bytes is 8 MiB
+        rh_test_set(1, 1, 800ull << 20, 0);
+        tex_t big = target(&pool, 95102, 0, 2048, 1024); mtl_tex_init(&big);
+        id<MTLTexture> tbig = tex_mtl(&big);
+        __weak id<MTLHeap> big_heap = tbig.heap;
+        CHECK(tbig && big_heap && resident(big_heap), "oversized iOS target gets a live placement heap");
+        tbig = nil; mtl_tex_release(&big); mtl_alias_drop_pool(&pool); settle();
+        CHECK(waiting() == 0 && g_rh_bytes == 0, "heap exceeding iOS max_entry_bytes bypasses the pool");
+        CHECK(!big_heap || !resident(big_heap), "bypassed oversized heap leaves residency at once");
+
+        // >64 heaps drained to 0 via rh_wait when avail drops below 768 MiB
+        rh_test_set(1, 1, 2048ull << 20, 0);
+        __weak id<MTLHeap> batch_heaps[72];
+        tex_t batch[72];
+        for (unsigned i = 0; i < 72; i++) {
+            batch[i] = target(&pool, 95200 + i, (uint64_t)i * (256ull << 10), 128, 128);
+            mtl_tex_init(&batch[i]);
+            batch_heaps[i] = tex_mtl(&batch[i]).heap;
+        }
+        for (unsigned i = 0; i < 72; i++) mtl_tex_release(&batch[i]);
+        mtl_alias_drop_pool(&pool); settle();
+        CHECK(waiting() == 72, "72 small iOS heaps pool under the 96 MiB high-memory budget");
+
+        MTLHeapDescriptor *thd = [MTLHeapDescriptor new];
+        thd.type = MTLHeapTypePlacement; thd.size = 256 << 10; thd.storageMode = MTLStorageModePrivate;
+        id<MTLHeap> trig_h = [g_dev newHeapWithDescriptor:thd];
+        res_add(trig_h);
+        rh_test_set(1, 1, 512ull << 20, 0);
+        uint64_t trimmed_before = g_rh_trimmed;
+        rh_wait(trig_h);
+        int all_unres = !resident(trig_h);
+        trig_h = nil;
+        for (unsigned i = 0; i < 72; i++) {
+            if (batch_heaps[i] && resident(batch_heaps[i])) { all_unres = 0; break; }
+        }
+        CHECK(waiting() == 0 && g_rh_bytes == 0 && g_rh_trimmed == trimmed_before + 72, "rh_wait drains all 72 heaps across batches when iOS avail drops below 768 MiB");
+        CHECK(all_unres, "all 72 drained heaps leave the residency set outside g_rh_lk");
+
+        // >64 heaps drained to 0 under pressure != 0 via rh_trim
+        rh_test_set(1, 1, 2048ull << 20, 0);
+        for (unsigned i = 0; i < 70; i++) {
+            batch[i] = target(&pool, 95300 + i, (uint64_t)i * (256ull << 10), 128, 128);
+            mtl_tex_init(&batch[i]);
+            (void)tex_mtl(&batch[i]);
+        }
+        for (unsigned i = 0; i < 70; i++) mtl_tex_release(&batch[i]);
+        mtl_alias_drop_pool(&pool); settle();
+        CHECK(waiting() == 70, "70 small iOS heaps pool before memory pressure signal");
+        rh_test_set(1, 1, 2048ull << 20, 1);
+        rh_trim();
+        CHECK(waiting() == 0 && g_rh_bytes == 0, "iOS memory pressure drains all 70 heaps via rh_trim");
+
+        // macOS keeps +12.5 percent headroom and 256 MiB budget even if avail is low and pressure is set
+        rh_test_set(1, 0, 512ull << 20, 1);
+        tex_t mac_t = target(&pool, 95400, 0, 640, 360); mtl_tex_init(&mac_t);
+        id<MTLTexture> tmac = tex_mtl(&mac_t);
+        MTLSizeAndAlign need_m = [g_dev heapTextureSizeAndAlignWithDescriptor:tex_desc(&mac_t, 0)];
+        CHECK(tmac && tmac.heap && tmac.heap.size >= need_m.size + need_m.size / 8, "macOS keeps +12.5 percent headroom unchanged");
+        tmac = nil; mtl_tex_release(&mac_t); mtl_alias_drop_pool(&pool); settle();
+        CHECK(waiting() == 1, "macOS keeps pooling regardless of low avail or pressure");
+        os_unfair_lock_lock(&g_rh_lk); for (unsigned i = 0; i < g_rh_n; i++) g_rh[i].t -= RH_IDLE_NS; os_unfair_lock_unlock(&g_rh_lk);
+        rh_trim();
+        CHECK(waiting() == 0, "aged macOS heap drains cleanly");
+        rh_test_set(0, 0, 0, 0);
+    }
     mtl_sub_commit(); mtl_drain(); free(mem);
     printf("t_rt_recycle: %d checks, %d failed\n", checks, failed); return failed != 0;
 } }

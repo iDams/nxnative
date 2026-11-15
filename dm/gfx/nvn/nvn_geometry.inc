@@ -541,7 +541,7 @@ static void geo_mesh_encode(id<MTLRenderCommandEncoder> en_) {
     uint32_t info[8] = {0, 1, 0, 0, tris, 0, 0, 0}; memcpy(p, info, 32); memcpy(p + 32, &g_geo_mesh.a, sizeof g_geo_mesh.a);
     enc_r_vbuf(en, GEO_MESH_DRAW_SLOT, b.gpuAddress + o + 32);
     uint64_t save[5]; memcpy(save, g_geo_bind, sizeof save); memset(g_geo_bind, 0, sizeof g_geo_bind); g_geo_bind[3] = b.gpuAddress + o;
-    g_args_dirty[2] = 1; g_args_mesh = GEO_MESH_GS_SLOT; encode_args(en, g_geo_mesh.lean, 2, 0); g_args_mesh = 0; g_args_dirty[2] = 1;
+    args_dirty(2); g_args_mesh = GEO_MESH_GS_SLOT; encode_args(en, g_geo_mesh.lean, 2, 0); g_args_mesh = 0; args_dirty(2);
     memcpy(g_geo_bind, save, sizeof save);
     if (geo_mesh_take(en)) return;
     uint32_t pg = g_geo_mesh.prims;
@@ -673,11 +673,12 @@ static void mtk_encode(id<MTLRenderCommandEncoder> en_) {
         uint64_t first_gpu = g_mtk.ind_rec + 4;
         if (!g_mtk.ind) { id<MTLBuffer> b; size_t o = arena_alloc(16, &b); memcpy((uint8_t *)b.contents + o, &g_mtk.first, 4); first_gpu = b.gpuAddress + o; }
         [en setArgumentTable:g_ot atStages:MTLRenderStageObject];
-        g_args_dirty[3] = 1; encode_args(en, ts, 3, 0);
+        args_dirty(3); encode_args(en, ts, 3, 0);
+        za_check(first_gpu, "object table slot", DMSH_MESH_DRAW_SLOT);
         if (rec_on()) rec_table_op(RO_T_ADDR, g_ot, first_gpu, DMSH_MESH_DRAW_SLOT); else [g_ot setAddress:first_gpu atIndex:DMSH_MESH_DRAW_SLOT];
-        g_args_dirty[4] = 1; encode_args(en, ms, 4, 1);
+        args_dirty(4); encode_args(en, ms, 4, 1);
         enc_r_vbuf(en, DMSH_MESH_DRAW_SLOT, first_gpu);
-        if (g_mtk.ind) [en drawMeshThreadgroupsWithIndirectBuffer:g_mtk.ind threadsPerObjectThreadgroup:to threadsPerMeshThreadgroup:tm];
+        if (g_mtk.ind) { za_check(g_mtk.ind, "indirect mesh draw record", -1); [en drawMeshThreadgroupsWithIndirectBuffer:g_mtk.ind threadsPerObjectThreadgroup:to threadsPerMeshThreadgroup:tm]; }
         else [en drawMeshThreadgroups:MTLSizeMake(g_mtk.count, 1, 1) threadsPerObjectThreadgroup:to threadsPerMeshThreadgroup:tm];
         return;
     }
@@ -685,18 +686,20 @@ static void mtk_encode(id<MTLRenderCommandEncoder> en_) {
         uint64_t draw_gpu = g_mtk.ind_rec;
         if (!g_mtk.ind) { id<MTLBuffer> b; size_t o = arena_alloc(16, &b); uint32_t rec[2] = {g_mtk.count, g_mtk.first}; memcpy((uint8_t *)b.contents + o, rec, 8); draw_gpu = b.gpuAddress + o; }
         [en setArgumentTable:g_ot atStages:MTLRenderStageObject];
+        za_check(draw_gpu, "object table slot", DMSH_MESH_DRAW_SLOT);
         if (rec_on()) rec_table_op(RO_T_ADDR, g_ot, draw_gpu, DMSH_MESH_DRAW_SLOT); else [g_ot setAddress:draw_gpu atIndex:DMSH_MESH_DRAW_SLOT];
-        g_args_dirty[4] = 1; encode_args(en, ms, 4, 1);
-        if (g_mtk.ind) [en drawMeshThreadgroupsWithIndirectBuffer:g_mtk.ind + 16 threadsPerObjectThreadgroup:to threadsPerMeshThreadgroup:tm];
+        args_dirty(4); encode_args(en, ms, 4, 1);
+        if (g_mtk.ind) { za_check(g_mtk.ind, "indirect mesh draw record", -1); [en drawMeshThreadgroupsWithIndirectBuffer:g_mtk.ind + 16 threadsPerObjectThreadgroup:to threadsPerMeshThreadgroup:tm]; }
         else [en drawMeshThreadgroups:MTLSizeMake((g_mtk.count + DMSH_MESH_GRID - 1) / DMSH_MESH_GRID, 1, 1) threadsPerObjectThreadgroup:to threadsPerMeshThreadgroup:tm];
         return;
     }
     // No task and no object function (chain 39417042cfe8): 8 parts of at most MDX_MESH_GRID
-    g_args_dirty[4] = 1; encode_args(en, ms, 4, 1);
+    args_dirty(4); encode_args(en, ms, 4, 1);
     if (g_mtk.ind) {
         for (int k = 0; k < MDX_MESH_PARTS; k++) {
             uint64_t part = g_mtk.ind + 32 + 16 * (uint64_t)k;
             enc_r_vbuf(en, DMSH_MESH_DRAW_SLOT, part + 12);
+            za_check(part, "indirect mesh draw record", -1);
             [en drawMeshThreadgroupsWithIndirectBuffer:part threadsPerObjectThreadgroup:to threadsPerMeshThreadgroup:tm];
         }
         return;
