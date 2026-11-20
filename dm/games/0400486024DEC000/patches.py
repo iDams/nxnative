@@ -40,6 +40,7 @@ def frame_step(ctx):
     fs_put(site, [B(site, start)], 'frame ratio: the host\'s step × base rate / 60 instead of base rate / the game\'s frame rate (state page target fps; 0 = the game\'s ratio)')
     dynamic_resolution(ctx)
     if ctx.base == 0x6e6be0:   # v131072, where the frame-step function starts here: the stubs below use fixed addresses verified on that build only
+        render_scale(ctx)   # the launcher's Render scale (state +0x10)
         wide_view(ctx); ctx.capabilities.add('WIDE_VIEW')   # the launcher's Wide view (state +0x100..+0x13f; settings.tsv fixups:WIDE_VIEW)
 
 # The game's dynamic resolution (game__gfx__DynamicResolutionParam: LoadThreshold, ReduceCounterMax, IncreaseCounterMax and a list of levels, each a ResolutionReduceScale and a
@@ -76,9 +77,99 @@ def dynamic_resolution(ctx):
     if site is None or ctx.others.get('dynamic resolution update') is None: return   # not both found in this build (a red line from the locator): the game's own dynamic resolution
     fs_site(site, '017c40bd')   # ldr s1,[x0,#0x7c]
     start = here(); emit(ADRP(16, here(), FS_STATE_OFF))
-    for w in drs_controller: emit(w)
+    # kid-with-sword-remake L5: the threshold (word 5, ldr s1,[x0,#0x10]) is the host's when it gives one (state +0x2a4, a float in the game's load units; 0 = the game's own 83,
+    # about 16.4 ms). The game's is a 60 fps frame: at the 30 fps cap an iPhone lowers the GPU clock until the work fills most of the 33 ms, so the load read 100-120 there and the
+    # controller would sit at its floor (dm/host/loader.c writes twice the game's at 30 fps)
+    first = here(); tail = first + 4 * len(drs_controller)
+    for k, w in enumerate(drs_controller):
+        assert (k != 5) or w == 0xbd401001
+        emit(B(here(), tail) if k == 5 else w)
+    assert here() == tail
+    for w in (0xbd401001,    # ldr s1,[x0,#0x10]      the game's threshold
+              0xbd42a602,    # ldr s2,[x16,#0x2a4]    the host's
+              0x1e202048,    # fcmp s2,#0.0
+              0x1e21cc41):   # fcsel s1,s2,s1,gt
+        emit(w)
+    emit(B(here(), first + 4 * 6))
     fs_put(site, [B(site, start)], 'dynamic resolution level: 0 (full resolution), or with state +0x40 (DM_DYNAMIC_RESOLUTION) a climb on the load measured at each level')
     ctx.capabilities.add('DYNAMIC_RESOLUTION')
+
+# Render scale (DM_RENDER_SCALE, state +0x10, dm/host/loader.c). The 3D views' sizes come from the scale the engine stores at main+0x31d3f48 (str s0,[x20,#0xe5c], found by
+# upstream PR #1497), but that store and the size loop after it (main+0x31d3fd8, which clears the "scale changed" bit 3 of [x20+0xe2c] at main+0x31d40b4) run only in a frame
+# where the dynamic-resolution controller (bl main+0x805aa0) answers status 0, a new scale: at a steady 60 fps it never does, so a stub at the store alone changed nothing until
+# the game came under load. Two stubs: at the controller's answer (main+0x31d3ee4, ubfx of its status byte) a host scale below 1.0 that is not the stored one makes the status 0, so
+# that frame recomputes the sizes; at the store the host scale replaces the game's (seedds' fixed form of #1497's ceiling). The scale is then fixed and the dynamic resolution off;
+# 0, unset or over 1.0 run the game's own code; 1.0 itself is fixed at the full base (this game's slider, game.tsv render_scale). Registers and flags are kept but x8 (the status, as the game reads it next) and s0 (dead after the store: main+0x31d3f84 reloads it).
+_scale_status, _scale_store = 0x31d3ee4, 0x31d3f48
+
+def _bcond(frm, to, cond): return 0x54000000 | (((to - frm) >> 2) & 0x7ffff) << 5 | cond
+def _cbz_w(frm, to, rt): return 0x34000000 | (((to - frm) >> 2) & 0x7ffff) << 5 | rt
+
+def render_scale(ctx):
+    here, emit = ctx.here, ctx.emit
+    ctx.site(_scale_status, '089c60d3')   # ubfx x8,x0,#32,#8: the controller's status byte
+    # kid-with-sword-remake L5: with Dynamic Resolution on (state +0x2a0, a float: the lowest scale it may go to, 0 = off), the host scale is the ceiling and not the only
+    # size: a stored scale from that floor up to the host's is the game's own choice and is left alone; one above the host's, or below the floor, asks for new sizes as before
+    s = here(); at = lambda k: s + 4 * k   # the stub's k-th word; force is word 21, done word 22
+    for k, w in enumerate((
+            0xd3609c08,                       # ubfx x8,x0,#32,#8     the original
+            0xa9be47f0,                       # stp x16,x17,[sp,#-32]!
+            0xd53b4210,                       # mrs x16,nzcv
+            0xf9000bf0,                       # str x16,[sp,#16]
+            ADRP(16, at(4), ctx.state),
+            0xb9401211,                       # ldr w17,[x16,#0x10]  the host scale's bits
+            _cbz_w(at(6), at(22), 17),        # cbz w17,done         unset
+            0x52a7f010,                       # mov w16,#0x3f800000
+            0x6b10023f,                       # cmp w17,w16
+            _bcond(at(9), at(22), 0x8),       # b.hi done            over 1.0, negative or NaN: the game's own
+            0x7100051f,                       # cmp w8,#1
+            _bcond(at(11), at(22), 0x0),      # b.eq done            status 1, the game's other request (main+0x31d3f4c), is left alone
+            0xb94e5e90,                       # ldr w16,[x20,#0xe5c] the stored scale
+            0x6b11021f,                       # cmp w16,w17
+            _bcond(at(14), at(22), 0x0),      # b.eq done            already the host's
+            _bcond(at(15), at(21), 0x8),      # b.hi force           above the host's (positive floats order as their bits)
+            ADRP(17, at(16), ctx.state),
+            0xb942a231,                       # ldr w17,[x17,#0x2a0] the dynamic floor's bits
+            _cbz_w(at(18), at(21), 17),       # cbz w17,force        Dynamic Resolution off: the host's size only
+            0x6b11021f,                       # cmp w16,w17
+            _bcond(at(20), at(22), 0x2),      # b.hs done            from the floor up: the game's dynamic scale
+            0x52800008,                       # force: mov w8,#0     status 0: a new scale, so the sizes are recomputed
+            0xf9400bf0,                       # done: ldr x16,[sp,#16]
+            0xd51b4210,                       # msr nzcv,x16
+            0xa8c247f0)):                     # ldp x16,x17,[sp],#32
+        assert here() == at(k); emit(w)
+    emit(B(here(), _scale_status + 4))
+    ctx.put(_scale_status, [B(_scale_status, s)], 'dynamic-resolution status: a host render scale not yet stored asks for new 3D sizes (state +0x10; with Dynamic Resolution, one outside its range, state +0x2a0)')
+
+    ctx.site(_scale_store, '805e0ebd')    # str s0,[x20,#0xe5c]
+    s = here()   # fixed is word 16, original word 17
+    for k, w in enumerate((
+            0xadbf7ffe,                       # stp q30,q31,[sp,#-32]!
+            0xa9bf47f0,                       # stp x16,x17,[sp,#-16]!
+            ADRP(16, at(2), ctx.state),
+            0xd53b4211,                       # mrs x17,nzcv
+            0xbd40121e,                       # ldr s30,[x16,#0x10]  the host scale
+            0x1e2023c8,                       # fcmp s30,#0.0
+            _bcond(at(6), at(17), 0xd),       # b.le original        unset, negative or NaN
+            0x1e2e101f,                       # fmov s31,#1.0
+            0x1e3f23c0,                       # fcmp s30,s31
+            _bcond(at(9), at(17), 0xc),       # b.gt original        over 1.0
+            0xbd42a21f,                       # ldr s31,[x16,#0x2a0] the dynamic floor (0 = Dynamic Resolution off)
+            0x1e2023e8,                       # fcmp s31,#0.0
+            _bcond(at(12), at(16), 0xd),      # b.le fixed
+            0x1e3f6800,                       # fmaxnm s0,s0,s31     the game's dynamic scale, from the floor
+            0x1e3e7800,                       # fminnm s0,s0,s30     up to the host's
+            B(at(15), at(17)),
+            0x1e2043c0,                       # fixed: fmov s0,s30   the host's fixed scale
+            0xbd0e5e80,                       # original: str s0,[x20,#0xe5c]
+            0xd51b4211,                       # msr nzcv,x17
+            0xa8c147f0,                       # ldp x16,x17,[sp],#16
+            0xacc17ffe)):                     # ldp q30,q31,[sp],#32
+        assert here() == at(k); emit(w)
+    emit(B(here(), _scale_store + 4))
+    ctx.put(_scale_store, [B(_scale_store, s)], 'final 3D view scale: the host render scale fixes it, up to 1.0 (over 1.0 = the game\'s own); with Dynamic Resolution it is the ceiling of the game\'s dynamic scale')
+
+    ctx.render_scale = 1   # the loader takes DM_RENDER_SCALE up to 1.0 and the launcher offers the row (patch_nso.py RENDER_SCALE)
 
 # Wide view (DM_WIDE_VIEW, a launcher setting; X1): the game sizes its output from fixed constants, so a screen wider than 16:9 shows bars. These stubs take the widths from the state
 # page, written at each start from the screen's shape (loader.c dm_fps_state_apply), so the view widens (Hor+) and nothing stretches; 0 there (16:9, or the setting off) runs the game's
@@ -207,14 +298,45 @@ MATCH_FRAME_STEP = {'main': [
                 'dynamic resolution update': {'size': 0xb24, 'fingerprints': ['5a423697838976baf286cffa5e2ceef0d4e037abbcd9d371e90e9e702d61b3d4']}}},   # main+0x805aa0
 ]}
 
+# The movie player's pictures per frame (PR #2456): once a frame main+0x3b5ca60 advances by up to +0x20 (constructor sets 1 for caller's arg 1, 2 for >= 2);
+# the cuts allow 2 pictures a frame (up to 3 in the update, keeping constructor pool=4 / inputs=2) and point the movie's frame counter at the player's +0xc.
+movie_pictures = 'movie pictures a frame: up to 2, the constructor\'s value for an argument of 2 or more, whatever its caller passes (1)'
+movie_cap = 'movie update cap: 3 pictures a frame, the frame step\'s largest hold, in place of the limit (2), which also sizes the decoder pipeline'
+movie_frame = 'movie frame: the pictures the player has taken (its +0xc), not 1 more for each frame drawn'
+MATCH_CUTS = {'main': [
+    {'name': movie_pictures, 'size': 828, 'fingerprints': ['f61ad468b6b4e1d574fe8678f5a12dfc60e1aab71be7375142a4b48b0d73ce19'],   # v131072 main+0x3b5cec0
+     'cuts': [(452, '88b79c1a', '48008052', movie_pictures + ' (cinc w8, w28, ge → mov w8, #2; as v131072 main+0x3b5d084)')]},
+    {'name': movie_cap, 'size': 368, 'fingerprints': ['6a29b27559214b3b89cc31a5b85f14bda4a55685f1ae4fe486d53eda66855867'],   # v131072 main+0x3b5ca60, the update
+     'cuts': [(192, '092040b9', '69008052', movie_cap + ' (ldr w9, [x0, #0x20] → mov w9, #3; as v131072 main+0x3b5cb20)')]},
+    {'name': movie_frame, 'functions': [
+        {'size': 344, 'fingerprints': ['cc1ca04feb1ca4e553a6c7a4f36f99b13f56977185eea8ef5cd8dd3dbbdcdbcd'],   # v131072 main+0x3b5c710, the draw
+         'cuts': [(180, '88fa42b908050011', '880a40f9080d40b9', movie_frame + ' (ldr w8, [x20, #0x2f8]; add w8, w8, #1 → ldr x8, [x20, #0x10]; ldr w8, [x8, #0xc]; as v131072 main+0x3b5c7c4)')]},
+        {'size': 196, 'fingerprints': ['8fe123ca6fcd016cd9c718e5e66035c807b27f63408861235765e47b4ec34da3'],   # v131072 main+0x3b5c870, the first draw
+         'cuts': [(152, '88fa42b908050011', '880a40f9080d40b9', movie_frame + ' (the same; as v131072 main+0x3b5c908)')]},
+    ]},
+]}
+
 BINDING = [
     {'what': 'movie player: the NDVE resource passed as null (stopgap for its 11 shaders that were not extracted)', 'now': 'build', 'goal': 'game', 'purpose': 'shaders',
      'why': "the movie player's resource selection in this game's own code; a function fingerprint could carry the cut to its updates",
      'checked': 'the black title movie on the iPhone until the cut, and its playback after it, 2026-11-05'},
+    {'what': 'movie pictures a frame: up to 2', 'now': 'game', 'goal': 'game', 'purpose': 'frame rate',
+     'why': "the game's own movie player constructor, found by its function's fingerprint on any build that keeps the function; no other game has it",
+     'checked': 'v131072 main: constructor, caller, update and advance read by disassembly; opening movie timed at 30 fps frame step (2026-11-12)'},
+    {'what': 'movie update cap: 3 pictures a frame', 'now': 'game', 'goal': 'game', 'purpose': 'frame rate',
+     'why': "the game's own movie player update, found by its function's fingerprint on any build that keeps the function; goes with the two-picture cut",
+     'checked': 'v131072 main: cap read of limit, pool=4 / inputs=2 verified by disassembly and opening forced to 3 vsyncs (2026-11-16)'},
+    {'what': 'movie frame: the pictures the player has taken', 'now': 'game', 'goal': 'game', 'purpose': 'frame rate',
+     'why': "the game's own movie draw functions, found by their functions' fingerprints on any build that keeps them",
+     'checked': 'v131072 main: event timeline and player +0xc verified by disassembly; opening timed at 2 vsyncs per frame (2026-11-16)'},
     {'what': 'frame ratio from the host\'s step', 'now': 'game', 'goal': 'game', 'purpose': 'frame rate',
      'why': "the game's own frame-ratio division, found by its function's fingerprint on any build that keeps the function",
      'checked': 'v131072 main: one function with this fingerprint, the site and its free registers read by disassembly (2026-11-08)'},
     {'what': 'dynamic resolution: full size, or a climb on the load measured at each level', 'now': 'game', 'goal': 'game', 'purpose': 'rendering',
      'why': "the game's own dynamic-resolution level function and update, found by their functions' fingerprints on any build that keeps both; switchable (DM_DYNAMIC_RESOLUTION)",
      'checked': 'v131072 main: one function with each fingerprint (the level function a leaf, x2..x11 / x16 / x17 / s0..s2 free), its callers, the update and the controller fields read by disassembly, the fields read in play (2026-11-08); the climb run natively against a model of the update and in play to full size (2026-11-09)'},
+    {'what': 'render scale at the dynamic-resolution status and the final 3D view scale store', 'now': 'build', 'goal': 'game', 'purpose': 'rendering',
+     'why': "the game's controller status and final scale store are its own code at fixed addresses",
+     'blocked': 'the two sites and their roles are verified for this main build only',
+     'checked': 'v131072 main E0F3CCFAF50065AE4EA01EB5AEB13B1A: the status ubfx at +0x31d3ee4, the store at +0x31d3f48 and the size loop that clears bit 3 of +0xe2c, 2026-11-06'},
 ]

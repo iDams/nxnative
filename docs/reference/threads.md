@@ -118,6 +118,14 @@ Guest threads, their synchronization and how the host schedules them. Each entry
 - **Fix:** `dm_yield_to_core_peers` returns at once for a caller whose mask allows another core, and such a waker is not marked for the handoff (`note_runnable`, `hle_thread.c`); the main thread's mask is 1 (core 0). A pinned waker keeps the handoff as before. `make -C dm/host/tests GAME=<id> preempt` has the case (exclusion 7: the signaller's mask is 0x5, and it returns before the woken worker's payload).
 - **Found on:** [Batman: Arkham Knight](../../dm/games/0100ACD0163D0000/README.md): every route run froze at New Story (frame 7,800 in one, 11,700 in another); with the fix the opening cutscene plays.
 
+### A same-core handoff waits without a timer per handoff
+
+- **Symptom:** frequent same-core handoffs raise CPU wakeups and power even at a steady frame rate.
+- **Cause:** the [same-core wake handoff](#same-core-wake-handoffs) rechecked the peer in a loop of 50 µs `nanosleep` polls (`dm_yield_to_core_peers`). Even a peer that blocked a few microseconds later had to wait for the timer to wake its waker.
+- **Fix:** the waker waits on its own condition variable (`hcv`), or `g_hand_cv` under `core_preempt`. With `G` held, `hand_signal` wakes it when a peer in its active handoff blocks, exits, or is paused. The same runnable-state scan decides when the waker can continue. A 50 µs timeout rechecks changes that send no notification, including host sleeps, host GPU work, and changes to priority or affinity. The thread dump counts timed rechecks, which can occur more than once within one handoff.
+- **Check:** `make -C dm/host/tests GAME=<id> handoff-wait` uses real thread SVCs in both scheduler modes. The worker stays guest-runnable until the signaller enters its condition wait. The notification case disables the timeout and requires the worker's guest wait to release the signaller. The backstop case parks the worker in a host wait without signalling the handoff and checks that a timed recheck releases the signaller. `t_handoff_wait --storm` measures fast wakes separately from these assertions.
+- **Found on:** [Catherine: Full Body](../../dm/games/0100BF00112C0000/README.md), originally measured by kencalx in NX18 and ported by Oliver Ames in [PR #2872](https://github.com/seedds/nxnative/pull/2872).
+
 ### Lock-free queues published without barriers
 
 - **Symptom:** the picture stops and stays (sound goes on) at random places, about one run in two: every task worker waits on its own event, and the task a waiter waits for counts a subtask that is marked queued but is in no queue (the ring's head equals its tail).
@@ -231,6 +239,14 @@ The yield back-off (`DM_YIELD_BACKOFF`) and the rewriter's spin waits (`patch_ns
 - **Found on:** [Metroid Dread](../../dm/games/010093801237C000/README.md): cutscenes at 33.3 ms, the sound thread at 33.2 ms. [Super Mario Bros. Wonder](../../dm/games/010015100B514000/README.md)'s frame-time p95 also went from 19.7 to 18.4 ms.
 - **Note:** timed waits (`WaitSynchronization`, condition variables) still use the host's own timeouts.
 
+### Relative thread waits can hold back the replay clock
+
+- **Symptom:** a game stops presenting just after the deterministic clock takes over. Mario Kart World v0 stops at frame 2 with its main thread and workers in `SleepThread`.
+- **Cause:** the host measured relative sleeps and timed synchronization waits on the guest clock. That clock advances only when a frame presents, so a thread needed to finish the frame could never run again.
+- **Fix:** kernel thread waits use their normal host deadlines during replay. `SleepThread` and the condition, address and synchronization waits can finish while guest time is pinned. Presents no longer wake thread waiters just to check a guest deadline. Games still read one fixed step of guest time per present, independent of the NVN interval. A signal can race a host timeout differently between replays, even at the same guest tick. A loop that waits for a later guest timestamp without presenting can still stall.
+- **Check:** `t_sync_wait` runs `SleepThread`, `WaitSynchronization` and `WaitForAddress` for 1 ms and for two 60 Hz vsyncs without advancing guest time. `t_counter_clock` checks the guest clock and frame count at NVN present intervals 1 and 2.
+- **Found on:** [Mario Kart World](../../dm/games/0400C3F00006E000/README.md), reported in [PR #2027](https://github.com/seedds/nxnative/pull/2027).
+
 ### Sleeps under 20 µs take the yield path
 
 - **Symptom:** a guest thread keeps a core at 100% with billions of `SleepThread` calls.
@@ -277,7 +293,7 @@ The yield back-off (`DM_YIELD_BACKOFF`) and the rewriter's spin waits (`patch_ns
 
 - **Symptom:** a wait times out after its event was signaled and cleared; closing and reusing a handle redirects a blocked wait to an unrelated event, or a wait on an exiting thread never completes. A signaled first entry also hides an invalid later handle. `ResetSignal` on a thread handle returns `0xfa01` (invalid state) instead of `0xe401` (invalid handle).
 - **Cause:** `WaitSynchronization` kept the caller's handle array and looked up its numbers again after waking. It neither retained the original objects nor recorded which signal completed the wait. Event and thread destruction followed handle ownership alone. The event SVCs treated a thread handle given to `ResetSignal` as a resettable object in the wrong state; the kernel accepts only a readable event (or a process) there, and invalid state means a readable event that is already clear.
-- **Fix:** as Horizon's `KSynchronizationObject::Wait`: reject more than 64 handles (`0xee01`), copy the handles and resolve every one (any invalid handle, the current-thread pseudo-handle and an event's write end included, is `0xe401`), and retain each event or thread until the wait returns, in the thread's own record (`thr_t.wobjs`, as the kernel's per-thread sync object buffer). Notification records the first matching index under `G`; later clearing or closing cannot undo completion. Thread reclamation waits for outstanding wait references. Ready objects, then a zero-time poll, precede a pending cancellation, and `CancelSynchronization` completes a blocked wait at once or else marks the next one. `ResetSignal` returns invalid handle for anything but a readable event. The short-poll back-off and deterministic-clock waits are unchanged.
+- **Fix:** as Horizon's `KSynchronizationObject::Wait`: reject more than 64 handles (`0xee01`), copy the handles and resolve every one (any invalid handle, the current-thread pseudo-handle and an event's write end included, is `0xe401`), and retain each event or thread until the wait returns, in the thread's own record (`thr_t.wobjs`, as the kernel's per-thread sync object buffer). Notification records the first matching index under `G`; later clearing or closing cannot undo completion. Thread reclamation waits for outstanding wait references. Ready objects, then a zero-time poll, precede a pending cancellation, and `CancelSynchronization` completes a blocked wait at once or else marks the next one. `ResetSignal` returns invalid handle for anything but a readable event.
 - **Found on:** synthetic host regressions in [`t_sync_wait.c`](../../dm/host/tests/t_sync_wait.c); six of its seven groups fail on the host before the fix (all but cancel-release). No game failure is known.
 
 ### Service-event producers follow the binding lifetime

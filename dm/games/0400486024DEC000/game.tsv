@@ -32,10 +32,16 @@ romfs_substitute	Tex/CmnTex_Map_Soil_FairyFountain_Floor_D_Nrm.bntx.zs=Tex/Dummy
 
 # ---- Memory ----
 # The Switch 2 leaves games 9 GB of its 12 GB (Donkey Kong Bananza's figure). The NPDM declares 48 MB of system resource, so virtual address memory is on.
-# nninitStartup asks SetHeapSize 0x18ce00000 (6.2 GB) with the 9 GB pool, as Mario Kart World. 256 MB in front + 4 GB alias region + 256 MB stack region + 8 GB heap region: a starting split, to be measured
-mem_reserve	0x320000000
-mem_alias	0x100000000
-mem_map_limit	on
+# nninitStartup asks SetHeapSize 0x18ce00000 (6.2 GB) with the 9 GB pool, as Mario Kart World.
+# kid-with-sword-remake L6.1: an 8 GB alias region on the iPhone (the Mac takes 64 GB whatever the profile says, hle_svc.c). With 4 GB, play filled it to 3.75 GB (logs 40,
+# 42, 44: "alias region mapped up to +3.75 GB"), and the cutscene after the Master Sword stopped on its first picture, a white screen, on iPhones only (nxnative issue #2407);
+# the Mac, with its 64 GB, plays it. 256 MB in front + 8 GB alias + 256 MB stack + 8 GB heap region. It is address space: the 9 GB pool still bounds what is mapped
+mem_reserve	0x420000000
+mem_alias	0x200000000
+# kid-with-sword-remake L6.1: no application-pool check on the guest's maps. At the Master Sword: the game holds its 6.2 GB heap, asks MapPhysicalMemory for 38 MB more as
+# the cutscene starts, and with mem_map_limit on was refused ("2.73 GB mapped, the application pool is full"); the SDK retries, the AV1 decoder never opens, and the fade-in
+# stays white for good. Without the check the map is made; guest memory is file-backed on iPhone (DM_GUEST_FILE=1), so pages it maps and does not touch cost nothing
+mem_map_limit	off
 mem_stack	0x10000000
 app_pool	0x240000000
 sys_resource	0x3000000
@@ -73,7 +79,7 @@ amiibo_overlay	on
 pool_skip_retired	on
 # The Render scale slider: a fixed fraction of the game's base size, from 0.25 (Potato) to 1.0; the render-scale stub fixes every value up to 1.0
 render_scale	0.25:1.0:0.05
-render_scale_marks	0.25=Potato
+render_scale_marks	0.25=Ultra Potato Mode 🥔
 # The 3D views' size at render scale 1.0, docked then handheld, for the launcher's Render scale row in pixels (settings.py render_base): the game renders its 3D at 65/64 of the
 # output's height times the scale (a Mac run and the owner's iPhone logs at 0.6: handheld 1169x658 for 1920x1080, Wide view's 1432x658 for 2352x1080, docked 1909x877 for 3136x1440)
 # and its width from that height and the output's shape (LauncherSettings.swift rangeLabel takes Wide view's shape from the screen)

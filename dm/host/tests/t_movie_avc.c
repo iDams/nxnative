@@ -4,10 +4,10 @@
 #include "../hle.h"
 #undef HLE_FORCE
 #define HLE_FORCE(mangled, why, ret, cname, ...) static ret cname(__VA_ARGS__)
-#include "../hle_movie.c"
 #include <VideoToolbox/VideoToolbox.h>
 static OSStatus synthetic_decode(VTDecompressionSessionRef, CMSampleBufferRef, VTDecodeFrameFlags, void *, VTDecodeInfoFlags *);
 #define VTDecompressionSessionDecodeFrame synthetic_decode
+#include "../hle_movie.c"
 #include "../hle_movie_avc.c"
 #undef VTDecompressionSessionDecodeFrame
 #include <assert.h>
@@ -82,7 +82,7 @@ static OSStatus synthetic_decode(VTDecompressionSessionRef session, CMSampleBuff
     return noErr;
 }
 static mavc *synthetic_avc(void) {
-    mavc *a = mavc_new(); a->depth = 4;
+    mavc *a = mavc_new(NULL); a->depth = 4;
     assert(!CMVideoFormatDescriptionCreate(NULL, kCMVideoCodecType_H264, 16, 16, NULL, &a->fd));
     a->vs = (VTDecompressionSessionRef)a;   // test-only sentinel; no hardware session
     return a;
@@ -108,7 +108,7 @@ static void annex_b_only(void) {
     assert(mavc_decode(a, none, sizeof none, 1000) == -1 && mavc_decode(a, none, 0, 1000) == 0 && mavc_queued(a) == 1);
     assert(mavc_take(a, 1, out, 16, 16, &pts) && out[0] == 50 && !mavc_queued(a));
     synthetic_free(a);
-    a = mavc_new(); writer w; uint8_t ps[64] = {0, 0, 0, 1}; size_t n = sps(&w, 100, 2, 1, 0); memcpy(ps + 4, w.p, n);
+    a = mavc_new(NULL); writer w; uint8_t ps[64] = {0, 0, 0, 1}; size_t n = sps(&w, 100, 2, 1, 0); memcpy(ps + 4, w.p, n);
     mavc_param_sets(a, ps, n + 4); assert(a->nsps == (int)n && a->depth == 0);
     size_t m = sps(&w, 100, 0, 1, 0); uint8_t len[64] = {0, 0, 0, (uint8_t)m}; memcpy(len + 4, w.p, m);   // a length-prefixed SPS
     a->dirty = 0; mavc_param_sets(a, len, m + 4); assert(!a->dirty && a->nsps == (int)n && a->depth == 0);
@@ -167,18 +167,20 @@ static void drain(int nout) {
     assert(!pthread_create(&d.wk, NULL, md_worker, &d));
     md_avc_open(&d); writer w; size_t n = sps(&w, 100, 0, 1, 0); keep_ps(d.avc, w.p, n);
     for (int i = 0; i < 3; i++) queue_picture(d.avc);
-    d.pend[0].in = 0; d.pend[0].pts = 777; d.pend[0].flags = 4; d.npend = 1; d.ninfree = MD_NIN - 1;
+    d.pend[0].in = 0; d.pend[0].pts = 777; d.pend[0].flags = 4; d.npend = 1; d.ninfree = MD_NIN - 1; d.in_eos = 1;
     md_pump(&d);
-    // a video decoder's results are queued for the deferred thread, due at once, not signalled on the decoding thread (md_pump_ev: it is not a guest thread)
-    int queued_out = 0; for (int i = 0; i < g_ndfq; i++) if (g_dfq[i].d == &d && g_dfq[i].ev == 1) { assert(g_dfq[i].due == now_ns()); queued_out = 1; }
-    assert(queued_out); md_defer_drop(&d); assert(!g_ndfq);
+    // The pump's notifications coalesce. The client takes one output per auto-cleared event, including when the pump has finished and nothing more will be decoded.
     void *self[2] = { NULL, &d }; int got = 0, idx, left; int64_t pts; uint32_t flags;
-    for (;;) {   // the client returns each output it takes, so the next one is always ready
+    for (;;) {
+        assert(g_ndfq == 1 && g_dfq[0].d == &d && g_dfq[0].ev == 1 && g_dfq[0].due == now_ns());
+        md_defer_drop(&d);   // the guest consumed this notification before calling AcquireOutputBufferIndex
         assert(!h_movie_AcqOut(self, &idx, &pts, &flags, &left));
         if (++got < 4) assert(d.out[idx].pic && pts == 0 && !(flags & 4));
         else { assert(!d.out[idx].pic && pts == 777 && flags == 4 && !d.avc_drain && !mavc_queued(d.avc) && !left); break; }
         assert(md_rel(&d, idx));
     }
+    assert(md_rel(&d, idx));
+    assert(!g_ndfq);
     md_job(&d, MDJ_QUIT); pthread_join(d.wk, NULL);
     for (int i = 0; i < MD_NOUT; i++) free(d.out[i].frm);
 }
@@ -224,7 +226,7 @@ int main(void) {
     assert(avc_reorder_depth(w.p, sizeof w.p) == 4); // unterminated Exp-Golomb code
     assert(avc_reorder_depth(w.p, sizeof w.p + 1) == 4);
 
-    mavc *a = mavc_new(); uint8_t out[16 * 16 * 3 / 2]; int64_t pts = -1;
+    mavc *a = mavc_new(NULL); uint8_t out[16 * 16 * 3 / 2]; int64_t pts = -1;
     n = sps(&w, 100, 2, 1, 0); keep_ps(a, w.p, n); queue_picture(a);
     assert(a->depth == 0 && mavc_take(a, 0, out, 16, 16, &pts) == 1 && pts == 0 && !mavc_queued(a));
     assert(out[0] == 16 && out[256] == 128);

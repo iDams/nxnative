@@ -73,8 +73,110 @@ static int render(void *out, int count, int with_pcm) {
     return 1;
 }
 static void *drain_stats(void *unused) { (void)unused; stats_drain(); return NULL; }
+static int16_t stream_sample(uint64_t frame, int ch_idx) {
+    int32_t base = (int32_t)(1 + (frame % 30000));
+    return (int16_t)(ch_idx & 1 ? -base : base);
+}
+static void fill_guest_block(gbuf *b, uint64_t start_frame, unsigned frames, int ch) {
+    int16_t *pcm = b->ptr;
+    for (unsigned i = 0; i < frames; i++) {
+        for (int c = 0; c < ch; c++) {
+            pcm[(size_t)i * (size_t)ch + (size_t)c] = (c < 2) ? stream_sample(start_frame + i, c) : 0;
+        }
+    }
+    b->size = (uint64_t)frames * (uint64_t)ch * sizeof(int16_t);
+}
+// Reproduces iPhone 17 Pro Max DM_AUDIO_MIX=1 (240-1024 frame callbacks against 4 x 240-frame guest/audren blocks),
+// forced 2048-frame callbacks, and 6-channel 2 x 256-frame Bluetooth/mix callbacks.
+static void replay_callback_regime(const char *label, int ch, unsigned nbufs, unsigned buf_frames, int mode, int mix_env) {
+    if (mix_env) setenv("DM_AUDIO_MIX", "1", 1); else unsetenv("DM_AUDIO_MIX");
+    uint32_t out[16] = {0};
+    uint8_t prm[8] = {0};
+    *(uint16_t *)(prm + 4) = (uint16_t)ch;
+    CHECK(!h_au_OpenDef0(out, prm), label);
+    aout *a = ao(out);
+    atomic_store(&a->state, STATE_STARTED);
+
+    int16_t pcm_storage[4][512 * 6];
+    gbuf bufs[4];
+    uint64_t submitted = 0;
+    for (unsigned i = 0; i < nbufs; i++) {
+        bufs[i] = (gbuf){.ptr = pcm_storage[i], .cap = sizeof pcm_storage[i], .size = 0};
+        fill_guest_block(&bufs[i], submitted, buf_frames, ch);
+        submitted += buf_frames;
+        CHECK(h_au_Append(out, &bufs[i]) == 1, "initial guest buffer append");
+    }
+    // Drain any immediate early-released slots if DM_AUDIO_MIX pre-opened the target window
+    gbuf *rel;
+    while ((rel = h_au_Released(out)) != NULL) {
+        fill_guest_block(rel, submitted, buf_frames, ch);
+        submitted += buf_frames;
+        if (!h_au_Append(out, rel)) break;
+    }
+
+    uint64_t consumed = 0, mismatches = 0;
+    int started_stream = 0;
+    unsigned total_cbs = mode == 3 ? 1000 : 2000;
+    int16_t played[2048 * 2];
+    for (unsigned i = 0; i < total_cbs; i++) {
+        unsigned frames = 240;
+        if (mode == 1) frames = 1024;
+        else if (mode == 2) frames = (i % 5 == 0) ? 240 : ((i % 3 == 0) ? 512 : 1024); // mixed 240-1024 frames as on iOS
+        else if (mode == 3) frames = 2048;
+        else if (mode == 4) frames = (i + 1) * 40960 / 147 - i * 40960 / 147; // 278-279 frames (44.1->48 kHz Bluetooth)
+
+        memset(played, 0, (size_t)frames * 4);
+        AudioBufferList bl = {.mNumberBuffers = 1, .mBuffers = {{2, frames * 4, played}}};
+        in_callback = 1;
+        au_render(a, NULL, NULL, 0, frames, &bl);
+        in_callback = 0;
+        atomic_store(&a->st_pending, 0);
+
+        unsigned j = 0;
+        if (!started_stream) {
+            while (j < frames && played[2 * j] == 0 && played[2 * j + 1] == 0) j++;
+            if (j < frames) started_stream = 1;
+        }
+        for (; j < frames; j++) {
+            int16_t exp_l = stream_sample(consumed, 0);
+            int16_t exp_r = stream_sample(consumed, 1);
+            if (played[2 * j] != exp_l || played[2 * j + 1] != exp_r) mismatches++;
+            consumed++;
+        }
+
+        while ((rel = h_au_Released(out)) != NULL) {
+            fill_guest_block(rel, submitted, buf_frames, ch);
+            submitted += buf_frames;
+            if (!h_au_Append(out, rel)) { CHECK(0, "requeue returned guest buffer"); break; }
+        }
+    }
+    uint64_t underruns = atomic_load(&a->under_n);
+    printf("%s: %u callbacks, %llu underruns, %llu mismatches, %llu frames verified\n",
+           label, total_cbs, (unsigned long long)underruns, (unsigned long long)mismatches, (unsigned long long)consumed);
+    CHECK(started_stream && consumed > 0, "stream produced audio samples");
+    CHECK(underruns == 0, "large/mixed callbacks run with zero underruns");
+    CHECK(mismatches == 0, "all played PCM samples are contiguous and in order");
+
+    // Stop must return every guest buffer exactly once so guest middleware can join cleanly.
+    h_au_Stop(out);
+    unsigned returned_after_stop = 0;
+    while (h_au_Released(out) != NULL) returned_after_stop++;
+    CHECK(returned_after_stop == nbufs, "stop returns all in-flight guest buffers");
+
+    // Exclusive 240-frame mode must keep zero extra prebuffer latency when DM_AUDIO_MIX is off.
+    if (mode == 0) {
+        CHECK(consumed == (uint64_t)total_cbs * 240, "240-frame exclusive mode plays from sample 0 with no prebuffer hold");
+    }
+    h_au_Close(out);
+    unsetenv("DM_AUDIO_MIX");
+}
 int main(void) {
     setenv("DM_AUDIO", "0", 1); setenv("DM_AUDIO_MUTE", "0", 1);
+    replay_callback_regime("exclusive-240", 2, 4, 240, 0, 0);
+    replay_callback_regime("ios-mix-1024", 2, 4, 240, 1, 1);
+    replay_callback_regime("ios-mix-variable-240-1024", 2, 4, 240, 2, 1);
+    replay_callback_regime("unhinted-2048", 2, 4, 240, 3, 0);
+    replay_callback_regime("bt-6ch-2x256", 6, 2, 256, 4, 0);
     report_entered = dispatch_semaphore_create(0); report_allow = dispatch_semaphore_create(0);
     report_done = dispatch_semaphore_create(0); released_event = dispatch_semaphore_create(0);
     uint32_t out[16] = {0}; uint8_t prm[8] = {0}, ev[64] = {0};

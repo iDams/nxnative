@@ -12,6 +12,7 @@
 enum { FMT_PCM16 = 2, STATE_STARTED = 0, STATE_STOPPED = 1, RATE = 48000 };
 enum { BK_NONE, BK_AU, BK_NULL };   // what is consuming an output's queue right now (aout.backend)
 enum { AU_IDLE, AU_STARTING, AU_CANCELED, AU_WAIT_CALLBACK };
+enum { OWNED_N = 48, OWNED_MAX_FRAMES = 1024 };   // host-copied PCM slots so large callbacks (e.g. 1024-frame iOS audio mixing) never starve 4 x 240-frame producers
 
 typedef struct { void *ptr; uint64_t cap, size; } gbuf;     // The first 24 bytes written into the guest AudioOutBuffer
 #define QMAX 64
@@ -25,6 +26,16 @@ typedef struct {
     _Atomic uint32_t vol;              // SetAudioOutVolume gain as float bits (1.0 at open), applied to the samples as they are pulled
     gbuf *q[QMAX]; _Atomic uint32_t q_head, q_tail;       // Pending: written by the game side, read by the output side
     gbuf *rel[RELMAX]; _Atomic uint32_t rel_head, rel_tail; // Released: written by the output side, read by the game side
+    gbuf *early_rel[RELMAX]; uint32_t early_head, early_tail; // Guest buffers copied into owned_buf and returned early (under m)
+    uint8_t *owned_pcm;                // OWNED_N * OWNED_MAX_FRAMES * ch * 2 bytes
+    gbuf owned_buf[OWNED_N];
+    _Atomic uint8_t owned_busy[OWNED_N];
+    _Atomic uint64_t queued_bytes;     // Unplayed PCM bytes currently queued across q[]
+    _Atomic uint64_t target_bytes;     // Adaptive in-flight target (>0 only when callback frames > 240 or DM_AUDIO_MIX is active)
+    _Atomic uint32_t guest_in_q;       // Unreleased guest buffers currently sitting in q[]
+    uint64_t prebuf_need;              // Guest bytes required before draining after target_bytes expands (consumer-only)
+    unsigned prebuf_holds, small_cb_streak;
+    _Atomic int env_mix;
     uint64_t pos;                      // Bytes already played of the current block
     AudioUnit au;
     int start_phase, reset_pending, mute;   // a reset during start replaces the unit after the call returns
@@ -52,6 +63,48 @@ typedef struct {
 static aout *g_aos[AOMAX];
 static pthread_mutex_t g_aos_lock = PTHREAD_MUTEX_INITIALIZER;
 static int g_suspended;
+static _Atomic uint32_t g_io_buffer_hint_frames;
+
+static int owned_slot(const aout *a, const gbuf *b) {
+    return (b >= a->owned_buf && b < a->owned_buf + OWNED_N) ? (int)(b - a->owned_buf) : -1;
+}
+static int owned_alloc(aout *a) {
+    for (int i = 0; i < OWNED_N; i++) {
+        uint8_t exp = 0;
+        if (atomic_compare_exchange_strong_explicit(&a->owned_busy[i], &exp, 1, memory_order_acq_rel, memory_order_relaxed))
+            return i;
+    }
+    return -1;
+}
+static uint64_t au_target_bytes(int ch, uint32_t cb_frames) {
+    if (cb_frames <= RATE / 200) return 0;
+    uint32_t want = cb_frames * 2u + 480u;
+    if (want > OWNED_N * 240u) want = OWNED_N * 240u;
+    return (uint64_t)want * (uint64_t)ch * sizeof(int16_t);
+}
+static void au_sync_mix_hint(aout *a) {
+    const char *mix_e = getenv("DM_AUDIO_MIX");
+    int env_mix = mix_e && atoi(mix_e) != 0;
+    atomic_store_explicit(&a->env_mix, env_mix, memory_order_release);
+    uint32_t hint = atomic_load_explicit(&g_io_buffer_hint_frames, memory_order_acquire);
+    if (env_mix && hint < 1024u) hint = 1024u;
+    uint64_t init_target = au_target_bytes(a->ch, hint);
+    if (init_target > atomic_load_explicit(&a->target_bytes, memory_order_relaxed))
+        atomic_store_explicit(&a->target_bytes, init_target, memory_order_release);
+}
+void dm_audio_io_buffer_hint(unsigned frames) {
+    uint32_t norm = frames > (RATE / 200) ? (uint32_t)frames : 0u;
+    atomic_store_explicit(&g_io_buffer_hint_frames, norm, memory_order_release);
+    pthread_mutex_lock(&g_aos_lock);
+    for (int i = 0; i < AOMAX; i++) {
+        aout *a = g_aos[i];
+        if (!a) continue;
+        uint64_t want = au_target_bytes(a->ch, norm);
+        if (want > atomic_load_explicit(&a->target_bytes, memory_order_relaxed))
+            atomic_store_explicit(&a->target_bytes, want, memory_order_release);
+    }
+    pthread_mutex_unlock(&g_aos_lock);
+}
 static aout *ao(const void *g) { aout *a = objmap_get(g); if (!a) die("AudioOut %p was not created by the host", g); return a; }
 // the call site as "module+offset"; "host" when the host itself calls (in-process audio renderer)
 static const char *site(void *lr, char *buf, size_t n) {
@@ -90,6 +143,40 @@ static void *event_notify(void *p) {
     return NULL;
 }
 
+// Copy any guest-owned blocks currently sitting in q[] into host-owned slots and return the guest descriptors
+// so a 4 x 240-frame producer can refill up to target_bytes before the next large render callback.
+static void au_promote_pending(aout *a) {
+    int released = 0;
+    uint32_t qh = atomic_load_explicit(&a->q_head, memory_order_relaxed);
+    uint32_t qt = atomic_load_explicit(&a->q_tail, memory_order_acquire);
+    size_t slot_cap = (size_t)OWNED_MAX_FRAMES * (size_t)a->ch * sizeof(int16_t);
+    for (uint32_t i = qh; i != qt; i++) {
+        gbuf *b = a->q[i & (QMAX - 1)];
+        if (owned_slot(a, b) >= 0) continue;
+        uint64_t off = (i == qh) ? a->pos : 0;
+        uint64_t rem = b->size > off ? b->size - off : 0;
+        if (rem > slot_cap) continue;
+        int slot = owned_alloc(a);
+        if (slot < 0) break;
+        uint8_t *dst_pcm = a->owned_pcm + (size_t)slot * slot_cap;
+        if (rem) memcpy(dst_pcm, (const uint8_t *)b->ptr + off, (size_t)rem);
+        a->owned_buf[slot] = (gbuf){.ptr = dst_pcm, .cap = slot_cap, .size = rem};
+        a->q[i & (QMAX - 1)] = &a->owned_buf[slot];
+        if (i == qh) a->pos = 0;
+        uint32_t rw = atomic_load_explicit(&a->rel_tail, memory_order_relaxed);
+        uint32_t rr = atomic_load_explicit(&a->rel_head, memory_order_acquire);
+        if (rw - rr == RELMAX) die("AudioOut released queue overflow");
+        a->rel[rw & (RELMAX - 1)] = b;
+        atomic_store_explicit(&a->rel_tail, rw + 1, memory_order_release);
+        atomic_fetch_sub_explicit(&a->guest_in_q, 1, memory_order_release);
+        released = 1;
+    }
+    if (released) {
+        if (a->event) notify_release(a);
+        if (a->rel_sem) dispatch_semaphore_signal(a->rel_sem);
+    }
+}
+
 // Take n bytes from the pending queue and hand them to the output side; once a whole block has played, move it to released and notify the ordinary thread.
 static void pull(aout *a, uint8_t *dst, uint64_t n) {
     int released = 0;
@@ -104,15 +191,23 @@ static void pull(aout *a, uint8_t *dst, uint64_t n) {
         uint64_t k = b->size - a->pos; if (k > n) k = n;
         memcpy(dst, (uint8_t *)b->ptr + a->pos, k);
         dst += k; n -= k; a->pos += k;
+        atomic_fetch_sub_explicit(&a->queued_bytes, k, memory_order_release);
         if (a->pos >= b->size) {
-            uint32_t rw = atomic_load_explicit(&a->rel_tail, memory_order_relaxed);
-            uint32_t rr = atomic_load_explicit(&a->rel_head, memory_order_acquire);
-            if (rw - rr == RELMAX) die("AudioOut released queue overflow");
-            a->rel[rw & (RELMAX - 1)] = b;
-            atomic_store_explicit(&a->rel_tail, rw + 1, memory_order_release);
+            int slot = owned_slot(a, b);
+            if (slot >= 0) {
+                atomic_store_explicit(&a->owned_busy[slot], 0, memory_order_release);
+            } else {
+                uint32_t rw = atomic_load_explicit(&a->rel_tail, memory_order_relaxed);
+                uint32_t rr = atomic_load_explicit(&a->rel_head, memory_order_acquire);
+                if (rw - rr == RELMAX) die("AudioOut released queue overflow");
+                a->rel[rw & (RELMAX - 1)] = b;
+                atomic_store_explicit(&a->rel_tail, rw + 1, memory_order_release);
+                atomic_fetch_sub_explicit(&a->guest_in_q, 1, memory_order_release);
+                released = 1;
+            }
             qh++;
             atomic_store_explicit(&a->q_head, qh, memory_order_release);
-            a->pos = 0; released = 1;
+            a->pos = 0;
         }
     }
     uint32_t vb = atomic_load_explicit(&a->vol, memory_order_relaxed);
@@ -171,8 +266,47 @@ static OSStatus au_render(void *ctx, AudioUnitRenderActionFlags *f, const AudioT
     if (atomic_load_explicit(&a->hold_device, memory_order_acquire)) {
         memset(bl->mBuffers[0].mData, 0, bl->mBuffers[0].mDataByteSize);
     } else {
-        pull_device(a, bl->mBuffers[0].mData, bl->mBuffers[0].mDataByteSize);
-        if (a->mute) memset(bl->mBuffers[0].mData, 0, bl->mBuffers[0].mDataByteSize);
+        uint32_t eff_frames = frames;
+        int env_mix = atomic_load_explicit(&a->env_mix, memory_order_acquire);
+        uint32_t hint = atomic_load_explicit(&g_io_buffer_hint_frames, memory_order_acquire);
+        if (env_mix && eff_frames < 1024u) eff_frames = 1024u;
+        if (hint > eff_frames) eff_frames = hint;
+        uint64_t want_target = au_target_bytes(a->ch, eff_frames);
+        uint64_t cur_target = atomic_load_explicit(&a->target_bytes, memory_order_acquire);
+        if (want_target > cur_target) {
+            atomic_store_explicit(&a->target_bytes, want_target, memory_order_release);
+            uint64_t req_bytes = (uint64_t)frames * (uint64_t)a->ch * sizeof(int16_t);
+            if (req_bytes > a->prebuf_need) { a->prebuf_need = req_bytes; a->prebuf_holds = 0; }
+        } else if (frames <= RATE / 200 && !env_mix && !hint && cur_target && ++a->small_cb_streak >= 64) {
+            atomic_compare_exchange_strong_explicit(&a->target_bytes, &cur_target, 0, memory_order_acq_rel, memory_order_relaxed);
+        }
+        if (frames > RATE / 200) a->small_cb_streak = 0;
+
+        int hold_prebuf = 0;
+        if (a->prebuf_need) {
+            uint64_t qbytes = atomic_load_explicit(&a->queued_bytes, memory_order_acquire);
+            if (qbytes >= a->prebuf_need || qbytes == 0 || a->prebuf_holds >= 4 ||
+                atomic_load_explicit(&a->state, memory_order_acquire) != STATE_STARTED) {
+                a->prebuf_need = 0;
+                a->prebuf_holds = 0;
+            } else {
+                au_promote_pending(a);
+                a->prebuf_holds++;
+                hold_prebuf = 1;
+            }
+        }
+        if (hold_prebuf) {
+            memset(bl->mBuffers[0].mData, 0, bl->mBuffers[0].mDataByteSize);
+        } else {
+            pull_device(a, bl->mBuffers[0].mData, bl->mBuffers[0].mDataByteSize);
+            uint64_t active_target = atomic_load_explicit(&a->target_bytes, memory_order_relaxed);
+            if (active_target > 0 &&
+                atomic_load_explicit(&a->state, memory_order_acquire) == STATE_STARTED &&
+                atomic_load_explicit(&a->queued_bytes, memory_order_acquire) < active_target) {
+                au_promote_pending(a);
+            }
+            if (a->mute) memset(bl->mBuffers[0].mData, 0, bl->mBuffers[0].mDataByteSize);
+        }
     }
     return noErr;
 }
@@ -293,6 +427,7 @@ static void aout_free(aout *a) {
     if (a->au) au_dispose(a->au);
     dispatch_release(a->notify_sem);
     if (a->rel_sem) dispatch_release(a->rel_sem);
+    free(a->owned_pcm);
     pthread_mutex_destroy(&a->m); free(a);
 }
 // A HAL start can block for seconds. Each output keeps consuming on the silent sink while its
@@ -414,9 +549,14 @@ static Result au_open_at(void *g, void *ev, const char *name, const uint8_t *par
     aout *a = calloc(1, sizeof *a);
     const char *mute = getenv("DM_AUDIO_MUTE"); a->mute = mute && atoi(mute);
     pthread_mutex_init(&a->m, NULL); a->event = ev; a->ch = ch;
+    a->owned_pcm = calloc(OWNED_N, (size_t)OWNED_MAX_FRAMES * (size_t)ch * sizeof(int16_t));
+    if (!a->owned_pcm) die("AudioOut owned_pcm calloc");
+    for (int i = 0; i < OWNED_N; i++) atomic_init(&a->owned_busy[i], 0);
     atomic_init(&a->state, STATE_STOPPED); atomic_init(&a->vol, 0x3f800000u);
     atomic_init(&a->q_head, 0); atomic_init(&a->q_tail, 0);
     atomic_init(&a->rel_head, 0); atomic_init(&a->rel_tail, 0);
+    atomic_init(&a->queued_bytes, 0); atomic_init(&a->target_bytes, 0); atomic_init(&a->guest_in_q, 0); atomic_init(&a->env_mix, 0);
+    au_sync_mix_hint(a);
     atomic_init(&a->null_run, 0); atomic_init(&a->notify_run, 1);
     atomic_init(&a->notify_pending, 0); atomic_init(&a->notify_armed, 0);
     atomic_init(&a->st_pending, 0);
@@ -452,6 +592,7 @@ static Result au_start_at(void *g, void *lr) {
     aout *a = ao(g);
     pthread_mutex_lock(&g_aos_lock);
     int was = atomic_exchange_explicit(&a->state, STATE_STARTED, memory_order_acq_rel);
+    au_sync_mix_hint(a);
     au_note(a, was == STATE_STARTED ? "Start (already playing)" : g_suspended ? "Start (app in the background: the silent sink takes over for now)" : "Start", lr);
     if (was != STATE_STARTED) {
         null_start(a); au_request_start(a);
@@ -472,13 +613,23 @@ static void au_release_pending(aout *a) {
     pthread_mutex_lock(&a->m);
     uint32_t qh = atomic_load_explicit(&a->q_head, memory_order_relaxed), qt = atomic_load_explicit(&a->q_tail, memory_order_acquire);
     uint32_t rr = atomic_load_explicit(&a->rel_head, memory_order_acquire), rw = atomic_load_explicit(&a->rel_tail, memory_order_relaxed);
-    int released = qh != qt;
+    int released = 0;
     while (qh != qt) {
-        if (rw - rr >= RELMAX) die("AudioOut released queue overflow while stopping");
-        a->rel[rw++ & (RELMAX - 1)] = a->q[qh++ & (QMAX - 1)];
+        gbuf *b = a->q[qh++ & (QMAX - 1)];
+        int slot = owned_slot(a, b);
+        if (slot >= 0) {
+            atomic_store_explicit(&a->owned_busy[slot], 0, memory_order_release);
+        } else {
+            if (rw - rr >= RELMAX) die("AudioOut released queue overflow while stopping");
+            a->rel[rw++ & (RELMAX - 1)] = b;
+            released = 1;
+        }
     }
     atomic_store_explicit(&a->rel_tail, rw, memory_order_release);
-    atomic_store_explicit(&a->q_head, qh, memory_order_release); a->pos = 0;
+    atomic_store_explicit(&a->q_head, qh, memory_order_release);
+    atomic_store_explicit(&a->queued_bytes, 0, memory_order_release);
+    atomic_store_explicit(&a->guest_in_q, 0, memory_order_release);
+    a->pos = 0; a->prebuf_need = 0; a->prebuf_holds = 0;
     pthread_mutex_unlock(&a->m);
     if (released) { if (a->event) notify_release(a); if (a->rel_sem) dispatch_semaphore_signal(a->rel_sem); }
 }
@@ -517,7 +668,9 @@ HLE_FORCE("_ZN2nn5audio16GetAudioOutStateEPKNS0_8AudioOutE", "playback state", i
 // Pokémon Legends: Z-A (SDK 19): Wwise's sink wakeup thread (main+0x30faae8) asks after every release event and marks the sink starved at 0; the SDK's own version read the audout session the host never made
 HLE_FORCE("_ZN2nn5audio22GetAudioOutBufferCountEPKNS0_8AudioOutE", "buffers appended and not yet played to the end (the one playing included)", unsigned, h_au_BufCount, const void *g) {
     aout *a = ao(g);
-    return atomic_load_explicit(&a->q_tail, memory_order_acquire) - atomic_load_explicit(&a->q_head, memory_order_acquire);
+    unsigned gq = atomic_load_explicit(&a->guest_in_q, memory_order_acquire);
+    unsigned qd = atomic_load_explicit(&a->q_tail, memory_order_acquire) - atomic_load_explicit(&a->q_head, memory_order_acquire);
+    return gq ? gq : (qd ? 1u : 0u);
 }
 HLE_FORCE("_ZN2nn5audio21GetAudioOutSampleRateEPKNS0_8AudioOutE", "sample rate", int, h_au_Rate, const void *g) { (void)ao(g); return RATE; }
 HLE_FORCE("_ZN2nn5audio23GetAudioOutChannelCountEPKNS0_8AudioOutE", "channel count", int, h_au_Ch, const void *g) { return ao(g)->ch; }
@@ -542,12 +695,43 @@ HLE_FORCE("_ZN2nn5audio20AppendAudioOutBufferEPNS0_8AudioOutEPNS0_14AudioOutBuff
     // cross-correlate the original game's audio against it (this is how the tier-one drop sound was verified). The file is opened only when the variable is set; when unset this costs only one extra cached check
     { static FILE *df; static int on = -1; if (on < 0) { const char *e = getenv("DM_AUDIO_DUMP"); on = e != NULL; if (on && !(df = fopen(e, "wb"))) LOG("[RED] DM_AUDIO_DUMP cannot open %s", e); }
       if (df && b && b->ptr && b->size) fwrite(b->ptr, 1, (size_t)b->size, df); }
+    int early = 0;
     pthread_mutex_lock(&a->m);
     uint32_t qt = atomic_load_explicit(&a->q_tail, memory_order_relaxed);
     uint32_t qh = atomic_load_explicit(&a->q_head, memory_order_acquire);
     int ok = qt - qh < QMAX;
-    if (ok) { a->q[qt & (QMAX - 1)] = b; atomic_store_explicit(&a->q_tail, qt + 1, memory_order_release); }
+    if (ok) {
+        size_t slot_cap = (size_t)OWNED_MAX_FRAMES * (size_t)a->ch * sizeof(int16_t);
+        uint64_t target = atomic_load_explicit(&a->target_bytes, memory_order_acquire);
+        uint64_t qbytes = atomic_load_explicit(&a->queued_bytes, memory_order_acquire);
+        int slot = -1;
+        if (target > 0 && qbytes < target &&
+            atomic_load_explicit(&a->state, memory_order_acquire) == STATE_STARTED &&
+            b && b->ptr && b->size <= slot_cap &&
+            (a->early_tail - a->early_head) < RELMAX) {
+            slot = owned_alloc(a);
+        }
+        if (slot >= 0) {
+            uint8_t *dst_pcm = a->owned_pcm + (size_t)slot * slot_cap;
+            if (b->size) memcpy(dst_pcm, b->ptr, (size_t)b->size);
+            a->owned_buf[slot] = (gbuf){.ptr = dst_pcm, .cap = slot_cap, .size = b->size};
+            a->q[qt & (QMAX - 1)] = &a->owned_buf[slot];
+            atomic_fetch_add_explicit(&a->queued_bytes, b->size, memory_order_relaxed);
+            atomic_store_explicit(&a->q_tail, qt + 1, memory_order_release);
+            a->early_rel[a->early_tail++ & (RELMAX - 1)] = b;
+            early = 1;
+        } else {
+            a->q[qt & (QMAX - 1)] = b;
+            if (b) atomic_fetch_add_explicit(&a->queued_bytes, b->size, memory_order_relaxed);
+            atomic_fetch_add_explicit(&a->guest_in_q, 1, memory_order_relaxed);
+            atomic_store_explicit(&a->q_tail, qt + 1, memory_order_release);
+        }
+    }
     pthread_mutex_unlock(&a->m);
+    if (early) {
+        if (a->event) notify_release(a);
+        if (a->rel_sem) dispatch_semaphore_signal(a->rel_sem);
+    }
     return ok;      // bool: false when the queue is full (the real device has a limit too)
 }
 HLE_FORCE("_ZN2nn5audio25GetReleasedAudioOutBufferEPNS0_8AudioOutE", "get a played buffer; NULL if none", gbuf *, h_au_Released, void *g) {
@@ -555,7 +739,12 @@ HLE_FORCE("_ZN2nn5audio25GetReleasedAudioOutBufferEPNS0_8AudioOutE", "get a play
     pthread_mutex_lock(&a->m);
     uint32_t rr = atomic_load_explicit(&a->rel_head, memory_order_relaxed);
     uint32_t rw = atomic_load_explicit(&a->rel_tail, memory_order_acquire);
-    if (rr != rw) { b = a->rel[rr & (RELMAX - 1)]; atomic_store_explicit(&a->rel_head, rr + 1, memory_order_release); }
+    if (rr != rw) {
+        b = a->rel[rr & (RELMAX - 1)];
+        atomic_store_explicit(&a->rel_head, rr + 1, memory_order_release);
+    } else if (a->early_head != a->early_tail) {
+        b = a->early_rel[a->early_head++ & (RELMAX - 1)];
+    }
     pthread_mutex_unlock(&a->m);
     return b;
 }

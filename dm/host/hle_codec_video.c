@@ -23,6 +23,7 @@
 #include "hle_movie_yuv.h"
 #include "hle_movie_avc.h"   // H.264 on VideoToolbox
 #include "hle_movie_av1.h"   // AV1 on VideoToolbox
+#include "hle_movie_vt.h"
 
 #define CV_MAGIC 0x56436d44u        // 'DmCV'
 #define CV_SYNC 0x53436d44u         // 'DmCS': a sync handle the host made (dec id, index, generation)
@@ -44,6 +45,7 @@ typedef struct {
     uint32_t magic, id; pthread_mutex_t mu; vpx_codec_ctx_t vpx; int vpx_ok; void *event; uint64_t submits, pictures;
     int codec; uint16_t w, h; mavc *avc; uint8_t *csd; size_t csd_n;   // H.264: VideoToolbox and the parameter sets Initialize gave
     mav1 *av1;   // AV1: VideoToolbox, or dav1d where the chip has no AV1 decoder (hle_movie_av1.c)
+    movie_vt_control vt;
     struct { cv_pool *pool; uint32_t pidx; int reg, filled; uint32_t gen, filled_gen; uint16_t w, h; int64_t ts; uint8_t eos; } buf[CV_BUFS];
     uint32_t fifo[8], fhead, fcount;          // acquirable indices
     uint32_t pend[CV_BUFS], phead, pcount;    // released, waiting for a picture
@@ -114,6 +116,7 @@ static void drain(cv_dec *d, int took) {
             b->w = (uint16_t)im->d_w; b->h = (uint16_t)im->d_h; b->ts = ts; b->eos = eos;
             if (b->pool && b->pidx < b->pool->count) { pool_native_write(b->pool, b->pidx, im); if (b->pool->img[b->pidx]) vpx_img_free(b->pool->img[b->pidx]); b->pool->img[b->pidx] = im; } else vpx_img_free(im);
             if (!d->pictures++) LOG("[codec] %s decoder %u: first picture %ux%u into buffer %u", k_cv_name[d->codec], d->id, b->w, b->h, i);
+            dm_movie_picture(d, "nn::codec", ts, 0);   // the frame step follows its rate (hle_movie.c); its times are in ns
         } else { b->w = b->h = 0; b->ts = 0; b->eos = 1; d->eos_pending = 0; }
         if (b->eos) LOG("[codec] %s decoder %u: end of stream after %llu pictures", k_cv_name[d->codec], d->id, (unsigned long long)d->pictures);
         b->filled = 1; b->filled_gen = b->gen;
@@ -238,11 +241,11 @@ HLE_FORCE("_ZN2nn5codec26ReadDecoderOutputImageNv12EPKNS0_25VideoDecoderImagePoo
 // VP8 and VP9 through libvpx, H.264 through VideoToolbox and AV1 through VideoToolbox or dav1d (hle_movie_avc.c, hle_movie_av1.c, whose NV12 pictures are copied into the pool as I420)
 static void cv_open(cv_dec *d) {   // (re)creates the codec state: a new stream starts at the next key frame
     if (d->codec == CV_AV1) {
-        if (!d->av1) d->av1 = mav1_new(); else mav1_reset(d->av1);
+        if (!d->av1) d->av1 = mav1_new(&d->vt); else mav1_reset(d->av1);
         d->vpx_ok = 1;
         return;
     }
-    if (d->codec == CV_H264) { if (!d->avc) d->avc = mavc_new(); else mavc_drop(d->avc); if (d->csd_n) mavc_param_sets(d->avc, d->csd, d->csd_n); d->vpx_ok = 1; return; }
+    if (d->codec == CV_H264) { if (!d->avc) d->avc = mavc_new(&d->vt); else mavc_drop(d->avc); if (d->csd_n) mavc_param_sets(d->avc, d->csd, d->csd_n); d->vpx_ok = 1; return; }
     if (d->vpx_ok) vpx_codec_destroy(&d->vpx);
     vpx_codec_dec_cfg_t cfg = {.threads = 2, .w = d->w, .h = d->h};
     d->vpx_ok = vpx_codec_dec_init(&d->vpx, d->codec == CV_VP8 ? vpx_codec_vp8_dx() : vpx_codec_vp9_dx(), &cfg, 0) == VPX_CODEC_OK;
@@ -265,7 +268,10 @@ static Result cv_dec_init(void *t, int codec, uint16_t w, uint16_t h, uint32_t i
 }
 static Result cv_dec_fin(void *t) {
     cv_dec *d = cv_of(t); if (!d) return 0;
-    pthread_mutex_lock(&g_cv_mu); g_cv[d->id - 1] = NULL; pthread_mutex_lock(&d->mu); pthread_mutex_unlock(&d->mu); pthread_mutex_unlock(&g_cv_mu);   // no sync handle lookup is still inside
+    pthread_mutex_lock(&g_cv_mu); g_cv[d->id - 1] = NULL; pthread_mutex_unlock(&g_cv_mu);
+    movie_vt_cancel(&d->vt);
+    pthread_mutex_lock(&d->mu); pthread_mutex_unlock(&d->mu);   // no sync handle lookup is still inside
+    dm_movie_stopped(d);   // its movie ends now (the frame step, hle_movie.c)
     if (d->codec != CV_H264 && d->codec != CV_AV1 && d->vpx_ok) vpx_codec_destroy(&d->vpx);
     if (d->avc) mavc_free(d->avc);
     if (d->av1) mav1_free(d->av1);
@@ -300,11 +306,14 @@ static Result cv_dec_unreg(void *t, uint32_t i) {   // the buffer leaves the dec
     pthread_mutex_unlock(&d->mu);
     return 0;
 }
-static Result cv_dec_reset(void *t) {   // Stop / Flush: pictures not yet given to a buffer and a pending end of stream are dropped, the decoder starts over at the next key frame
+static Result cv_dec_reset(void *t, int stop) {   // Stop / Flush: pictures not yet given to a buffer and a pending end of stream are dropped, the decoder starts over at the next key frame
     cv_dec *d = cv_of(t); if (!d) return 0;
+    movie_vt_cancel(&d->vt);
     pthread_mutex_lock(&d->mu);
+    if (stop) dm_movie_stopped(d);   // its movie ends now; a Flush (a seek, a loop) keeps the movie playing (the frame step, hle_movie.c)
     for (int i = 0; i < d->nheld; i++) vpx_img_free(d->held[i]);
     d->nheld = 0; d->eos_pending = 0;
+    movie_vt_continue(&d->vt);
     cv_open(d);
     if (d->event) hle_signal_system_event(d->event);
     pthread_mutex_unlock(&d->mu);
@@ -409,8 +418,8 @@ static Result cv_dec_encrypted(void) { static int once; if (!once++) LOG("[RED] 
     HLE_FORCE(s_reg, "a buffer of the host decoder, acquirable at once", Result, h_cv_##tag##reg, void *t, uint32_t i, void *pool, uint32_t pidx) { return cv_dec_reg(t, i, pool, pidx); } \
     HLE_FORCE(s_unreg, "the buffer leaves the host decoder", Result, h_cv_##tag##unreg, void *t, uint32_t i) { return cv_dec_unreg(t, i); } \
     HLE_FORCE(s_start, "the host decoder decodes on submission; ready for packets from here on", Result, h_cv_##tag##start, void *t) { return cv_dec_start(t); } \
-    HLE_FORCE(s_stop, "drops undelivered pictures", Result, h_cv_##tag##stop, void *t) { return cv_dec_reset(t); } \
-    HLE_FORCE(s_flush, "drops undelivered pictures", Result, h_cv_##tag##flush, void *t) { return cv_dec_reset(t); } \
+    HLE_FORCE(s_stop, "drops undelivered pictures", Result, h_cv_##tag##stop, void *t) { return cv_dec_reset(t, 1); } \
+    HLE_FORCE(s_flush, "drops undelivered pictures", Result, h_cv_##tag##flush, void *t) { return cv_dec_reset(t, 0); } \
     HLE_FORCE(s_ev, "signalled while the host decoder takes packets", Result, h_cv_##tag##event, void **out, void *t) { return cv_dec_event(out, t); } \
     HLE_FORCE(s_sub, "decodes the packet on the submitting thread", Result, h_cv_##tag##submit, uint64_t *out, void *t, const void *data, uint64_t size, int64_t ts, bool eos) { return cv_dec_submit(out, t, data, size, ts, eos); } \
     HLE_FORCE(s_enc, "protected streams are not served", Result, h_cv_##tag##enc, void) { return cv_dec_encrypted(); } \

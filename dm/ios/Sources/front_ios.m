@@ -506,9 +506,11 @@ void front_save_failed(int err) {
 // the category is Playback, as a game's or media app's: the ring / silent switch does not mute it (the default SoloAmbient follows the switch, which silenced the game whenever the phone was on silent) and it interrupts other apps' audio unless DM_AUDIO_MIX=1 opts into AVAudioSessionCategoryOptionMixWithOthers (cleared explicitly to 0 when off so a shared shell keeps each game's setting isolated).
 // Set once at boot and again on return to the foreground (the system may reset it after an interruption)
 static int g_session_off;   // the last activation failed (another app or a call still held the session): tried again when the app becomes active
+void dm_audio_io_buffer_hint(unsigned frames);
 void front_ios_audio_session(void) {
     AVAudioSession *s = AVAudioSession.sharedInstance; NSError *e = nil;
     const char *mix_env = getenv("DM_AUDIO_MIX");
+    BOOL mix_on = dm_audio_mix_enabled(mix_env);
     // With the microphone offered to the game (DM_MIC, mic_apple.m) the category is PlayAndRecord, set here at boot so the game's sound does not change mid-play: the loudspeaker stays
     // the output (not the receiver), Bluetooth headphones keep their music profile (A2DP; the hands-free profile would take their quality), and the silent switch still does not mute it
     if (dm_mic_wanted()) {
@@ -520,7 +522,10 @@ void front_ios_audio_session(void) {
     if (![s setPreferredIOBufferDuration:0.005 error:&e]) LOG("[RED] audio session I/O buffer duration could not be set: %s", e.localizedDescription.UTF8String);
     g_session_off = ![s setActive:YES error:&e];
     if (g_session_off) LOG("[RED] audio session activation failed: %s", e.localizedDescription.UTF8String);
-    LOG("audio session: sample rate %.0f Hz, I/O buffer %.2f ms (asked for 5 ms), mix %s", s.sampleRate, s.IOBufferDuration * 1000, dm_audio_mix_enabled(mix_env) ? "on" : "off");
+    unsigned io_frames = s.IOBufferDuration > 0 ? (unsigned)(s.IOBufferDuration * 48000.0 + 0.5) : 0;
+    if (mix_on && io_frames < 1024u) io_frames = 1024u;
+    dm_audio_io_buffer_hint((mix_on || io_frames > 240u) ? io_frames : 0u);
+    LOG("audio session: sample rate %.0f Hz, I/O buffer %.2f ms (asked for 5 ms), mix %s", s.sampleRate, s.IOBufferDuration * 1000, mix_on ? "on" : "off");
 }
 
 // Real audio output is suspended (the silent sink paces the game) while the app is in the background or another audio session has interrupted ours (Siri, an alarm, a call).
@@ -562,14 +567,18 @@ static void save_sync_background(void) {
 void front_ios_focus_event(int ev) {
     if (!g_layer) return;
     switch (ev) {
-        case 0: quit_close(); dm_gamepad_reset(); dm_focus_set(2); break;
-        case 1: UIApplication.sharedApplication.idleTimerDisabled = NO; dm_focus_set(3); g_audio_bg = 1; front_ios_audio_apply(); guest_clock_freeze_for(1, 1); dm_gfx_suspend(1); save_sync_background(); break;
+        case 0: dm_movie_active(0); quit_close(); dm_gamepad_reset(); dm_focus_set(2); break;
+        case 1: UIApplication.sharedApplication.idleTimerDisabled = NO; dm_focus_set(3);
+            // The game's threads as they stand, the first 3 times the app leaves the screen: a player leaves a game that has stopped going on (the owner's log after the
+            // Master Sword: the same white frame for 5 minutes, no error), and this is what each thread waits for (hle_thread.c svc_thread_dump_live: suspends no thread)
+            { void svc_thread_dump_live(void); static int n; if (n++ < 3) { LOG("app to the background: the game's threads as they stand (what a game that stopped going on waits for)"); svc_thread_dump_live(); } }
+            g_audio_bg = 1; front_ios_audio_apply(); guest_clock_freeze_for(1, 1); dm_gfx_suspend(1); save_sync_background(); break;
         case 2: dm_gfx_suspend(0); guest_clock_freeze_for(1, 0); front_ios_audio_session(); g_audio_bg = 0; front_ios_audio_apply(); dm_focus_set(2); break;
         case 3:   // Becoming active again also ends an interruption whose "ended" never came (not every one sends it), and retries a session that would not activate on the way back
             UIApplication.sharedApplication.idleTimerDisabled = YES;
             if (g_audio_intr) { LOG("audio session: active again with no interruption-ended notice; resuming"); g_audio_intr = 0; g_session_off = 1; }
             if (g_session_off) front_ios_audio_session();
-            front_ios_audio_apply(); dm_gamepad_active(); dm_focus_set(1); break;
+            front_ios_audio_apply(); dm_gamepad_active(); dm_focus_set(1); dm_movie_active(1); break;
     }
 }
 
