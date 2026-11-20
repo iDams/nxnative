@@ -17,7 +17,7 @@
 > * **Cómo volver a una versión estable si un experimento futuro falla:** Ver [Sección 8 (Restauración Rápida a la Versión Estable)](#8-restauración-rápida-a-la-versión-estable-rollback).
 
 > [!NOTE]
-> **RAMA EXPERIMENTAL EN CURSO (`exp/upstream-perf-sync` — 2026-11-15):** Sincronizados los lotes `1–5C` (`f37d41ed`, `2524558d`, `5fed070a`) desde `seedds`, `cheemu` (`FF11`) y `nx2apple` preservando **`DMSH_CHAIN = "39417042cfe8"`**, `DM_WIDE_VIEW=1` y el auto-ocultado del engrane en `DmGamepad.m`, con todas las suites de macOS en verde y listo para compilar e instalar en `iPhone Dams`. Ver [Sección 16](#16-sincronización-experimental-de-rendimiento-expupstream-perf-sync-2026-11-14).
+> **RAMA EXPERIMENTAL EN CURSO (`exp/upstream-perf-sync` — 2026-11-20):** Sincronizados los lotes `1–5C` (`f37d41ed`, `2524558d`, `5fed070a`) y la nueva ola `6A–6C` (`2cfdad9a5`, `05ac34a26`, `e4ca997ea`, `39e386eb3`, `6e198fcc3`, `17a001193`) desde `cheemu/L`, `seedds/main` y `nx2apple/main`, preservando **`DMSH_CHAIN = "39417042cfe8"`** (`inputs 4bd48f723876`), `DM_WIDE_VIEW=1` y el auto-ocultado del engrane en `DmGamepad.m`, con `patched_37f` regenerado y suites verificadas en macOS/Simulator. Ver [Sección 16](#16-sincronización-experimental-de-rendimiento-expupstream-perf-sync-2026-11-14).
 
 ---
 
@@ -394,5 +394,25 @@ xcrun devicectl device process launch \
   * `make -C dm/host/tests -j8 GAME=0400486024DEC000 run`: salida `0`.
   * Suite Python (`13` módulos de iOS, settings, launcher, ABI, `env_switches`, C lint y arquitectura): `89` tests `OK`.
   * `test_docs.py Length GameNotes`: `OK` (`Links` conserva `13` referencias previas de upstream a juegos/secciones ausentes en este fork).
+
+### 16.5 Ola de Sincronización `6A–6C` (`2cfdad9a5`..`17a001193` — 2026-11-20)
+* **Lote `6A` (`2cfdad9a5` — host, audio, micrófono y threads):** Parches de audio/playback, sensibilidad de micrófono (`DM_MIC_BOOST` + `mic_level.h`), cambios en `hle_thread.c`/`hle_svc.c`/`hle_audio.c` y decodificación de vídeo (`hle_movie_avc.c`).
+* **Lote `6B-1` (`05ac34a26` — `cheemu/L` `L6–L7.2` + memoria/perfil OoT):**
+  * `dm/games/0400486024DEC000/game.tsv`: región alias de `8 GB` (`mem_alias 0x200000000`, `mem_reserve 0x420000000`) y `mem_map_limit off` para evitar pantalla blanca tras la Master Sword en iOS.
+  * `dm/games/0400486024DEC000/patches.py`: umbral de resolución dinámica adaptado en host a `30 fps` (`state +0x2a4`) y límite superior de `DM_RENDER_SCALE` (`render_scale`), manteniendo el corte `CUTS` de NDVE y `wide_view`.
+  * Texturas/rendimiento NVN y host: `DM_NVN_TEX_MIP_SKIP` (`512/0`, activo por defecto en iPhone en `dm/games/settings.tsv`), límite de upload `48 MB`, compilación de PSO sin bloqueo (`pso_nw_get`), presupuestos de hilos RT en iOS (`rt_share` `0.4` acquire / `0.55` frame), pacing `tu_tick()` (`TU_MAX_DEF=32`, `TU_EVERY_DEF=2`) y `svc_thread_dump_live` débil en `hle_nvn.c`.
+* **Lote `6B-2a` (`e4ca997ea`):** Compartición/recorte de arena NVN (`DM_NVN_ARENA_SHARE`, `DM_NVN_ARENA_TRIM`), ventana ociosa de upload, replay de logs de pool, bandas cero, holgura RT y correcciones de colas/presentación.
+* **Lote `6B-2b-1` & `6B-2b-2` (`39e386eb3`, `6e198fcc3`):** Conformidad y caché de alias de texturas, lookups/demanda de PSO en segundo plano, alpha/rango DLSS, latch de display link, archivo PSO, tiles dispersos, race de páginas sucias y upload/feedback/geometría (`nvn_feedback.inc`, `nvn_ndve.inc`, `nvn_geometry.inc`, `nvn_dirty.*`, `nvn_mtl.m`). En `pso_desc` de `nvn_mtl.m`, la comprobación `ONE + ZERO` en floats se evalúa antes de `blend_zero_src1` para no desactivar blending en fuentes secundarias faltantes (`t_missing_src1`).
+* **Lote `6C` (`17a001193` — `L6.2–L6.6`, HUD, Joy-Con individual y Mods iOS):**
+  * **UI & HUD (`Launcher.swift`, `LauncherHome.swift`, `main.m`, `front_ios.m`, `nvn_mtl.m`):** Estilo oscuro forzado en `DmHostingController` (`overrideUserInterfaceStyle = .dark` + `.environment(\.colorScheme, .dark)`), default `DM_RENDER_SCALE=0.50` junto a `DM_COOL=1` bajo `10 GB` de RAM, interruptor `DM_LINK_30HZ` en `link_30hz()`, aplicación temprana de `launcher.DM_METAL_HUD` en `boot_env()` antes de `UIApplicationMain` (`front_ios_hud_enabled_from_saved_choice()`) + `front_hud_apply()` en `startGame`/`viewDidLayoutSubviews`. Se mantienen todos los selectores iOS en `dm/games/settings.tsv`, `DM_OPMODE=0`/`DM_GUEST_FILE=1` en `main.m`, y `AmiiboScan`/`dm_quit_menu()` en `GameMenu.swift`.
+  * **Joy-Con individual en iOS (`DmGamepad.m`):** Lectura vía `GCControllerLiveInput` (`pad_live_input`/`pad_usable`/`pad_listen`), preservando el auto-ocultado del engrane de ajustes (`K_MENU_PEEK_S = 4`), `front_ios_quit_poll()` y `front_ios_quit_controllers()`. Añadidos tests `testLiveJoyConMapsSidewaysAndKeepsItsOwnPlayer` y `testLiveJoyConsJoinOnButtonAndKeepPromptInputOutOfGame` en `dm/ios/tests/duo/Tests/DuoHarnessTests.m` (con `AmiiboScan.swift` y stubs en `DuoRuntimeStubs.m`/`project.yml`).
+  * **Gestor de Mods iOS (`dm/host/mods.h`, `mods_zip.h`, `mods_api.h`, `hle_mods.c`, `hle_fs.c`, `dm/ios/Sources/Mods.swift`, `scripts/oot_mods_rstb.py`, `dm/ios/tools/build_ipa.sh`):** Importación `.zip`/carpeta hacia `Documents/mods/<nombre>/romfs`, orden de prioridad en `DM_MODS`, fusión de tabla `RESTBL` (`DM_MODS_RSTB`/`DM_MODS_WORK`) y enlace con `-lcompression` en `dm/host/Makefile` y `dm/ios/tools/gen_build.py`.
+* **Regeneración de `/Users/marco/Ocarina/patched_37f/` (`17a001193`):** Reconstruidos `main`, `subsdk0` y `sdk` con `patch_nso.py` (`main.fixups.tsv`: `RENDER_SCALE=1`, `DYNAMIC_RESOLUTION=1`, `WIDE_VIEW=1`, `BUILD_ID=e0f3ccfaf50065ae4ea01eb5aeb13b1a`, `cuts 33`).
+* **Verificación en macOS / Simulador tras `17a001193`:**
+  * `DMSH_CHAIN`: `"39417042cfe8"` intacto (`dmsh_chain.py --inputs`: `4bd48f723876`).
+  * `make -C dm/gfx/tests GAME=0400486024DEC000 -j4 run`: salida `0` (`test_dmsh_pull.py` 4 tests `OK`, `test_tbdr_budget.py` 5 tests `OK`).
+  * `dm/host/tests`: `t_mods` (`87 checks, 0 failed`), `t_fs` (`PASS`), resto de pruebas (`t_language`..`t_symbols`, `t_preempt --all-peers`, `t_pause_stress`) `PASS`; único fallo aislado en `t_audio` escenario 3 (`device stall`, Mac sin salida AudioUnit activa).
+  * `swiftc -typecheck` iOS (`0` errores), `compile_check.py` (`265 files, 0 failed`), `dm/ios/tests` Python (`8` + `48` tests `OK`), `DuoHarness` en simulador `iPhone Duo` (`testLiveJoyConMapsSidewaysAndKeepsItsOwnPlayer` y `testLiveJoyConsJoinOnButtonAndKeepPromptInputOutOfGame`: `2 tests, 0 failures`), `test_dmsh_abi` (`11 OK`), `test_dmsh_alpha` (`8 OK`), y `dm/tools/tests` (`test_env_switches`, `test_lint_c`, `test_launcher_settings`, `test_settings`: `40 OK`). `test_docs.py` (`75 OK`, conservando 1 fallo en `test_relative_links_and_anchors_resolve` por 13 referencias previas de upstream a archivos/secciones no incluidos en el fork).
+
 
 
