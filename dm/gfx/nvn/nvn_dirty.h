@@ -12,6 +12,7 @@ void nvn_dirty_open_stats(uint64_t *opened, uint64_t *changed);    // Cumulative
 int nvn_dirty_tracked(const void *addr, size_t len);
 void nvn_dirty_protect(const void *addr, size_t len);              // Set the covered pages read-only
 void nvn_dirty_protect_sparse(const void *addr, size_t len);       // The same, for the pages behind a placement sparse tile: a later write to one moves nvn_dirty_sparse_writes
+void nvn_dirty_gpu_written(uintptr_t addr, size_t len);            // Stamp pages overwritten by a GPU blit while leaving CPU protection intact
 uint64_t nvn_dirty_sparse_writes(void);                            // Writes so far to pages protected that way
 void nvn_dirty_own_thread(void);                                   // The calling thread is the one that replays submissions
 uint64_t nvn_dirty_own_writes(void);                               // Writes to protected pages by that thread so far (faults and host writes): the ones in order with what it replays
