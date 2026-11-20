@@ -114,3 +114,10 @@ if [ -n "${DM_RESOURCE_TITLE:-}" ] && [ -f "$GD/amiibo.tsv" ]; then
 else
     rm -rf "$APP/romfs_overlay"
 fi
+# Uncompressed resource size table for Mods (main.m DM_MODS_RSTB, scripts/oot_mods_rstb.py)
+if [ -z "$DM_RESOURCE_PROGRAMS" ] && [ -f "${DM_RESOURCE_ROMFS:-}" ]; then
+    OV=""; [ ! -d "$APP/romfs_overlay" ] || OV="$APP/romfs_overlay"
+    DMT="$resource_dm/tools" python3 "$resource_dm/../scripts/oot_mods_rstb.py" "$DM_RESOURCE_ROMFS" "$APP/mods_rstb.bin" "$OV" || rm -f "$APP/mods_rstb.bin"
+else
+    rm -f "$APP/mods_rstb.bin"
+fi

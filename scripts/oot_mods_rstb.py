@@ -5,7 +5,7 @@
 # "<the table's RomFS path>\n" then the RESTBL bytes. The table the game reads without mods is the one stored: the overlay's (amiibo-nolimit/ first, scripts/oot_amiibo_overlay.py
 # raises the amiibo file's entry) where it has one, else the RomFS's. Exit 1 with a reason when the game has no RESTBL table (then mods still work, without raised entries).
 # The game's files are read from your own dump; nothing of the game is in this repository.
-import sys, os, struct
+import sys, os, shutil, struct
 
 def unzstd(z):
     try:
@@ -13,7 +13,8 @@ def unzstd(z):
         return zstandard.ZstdDecompressor().decompress(z, max_output_size=1 << 28)
     except ImportError:   # the zstd tool, where Python has no zstandard
         import subprocess
-        return subprocess.run(['zstd', '-q', '-d', '-c'], input=z, capture_output=True, check=True).stdout
+        zstd_bin = shutil.which('zstd') or ('/opt/homebrew/bin/zstd' if os.path.exists('/opt/homebrew/bin/zstd') else 'zstd')
+        return subprocess.run([zstd_bin, '-q', '-d', '-c'], input=z, capture_output=True, check=True).stdout
 
 def check(t):
     # RESTBL: magic, u32 version 1, u32 name slot size, u32 CRC entries, u32 name entries; the sizes must add up (mods.h mods_rstb_parse)
