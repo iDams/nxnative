@@ -190,6 +190,14 @@ int main(void) { @autoreleasepool {
         os_unfair_lock_lock(&g_rh_lk); for (unsigned i = 0; i < g_rh_n; i++) g_rh[i].t -= RH_IDLE_NS; os_unfair_lock_unlock(&g_rh_lk);
         rh_trim();
         CHECK(waiting() == 0, "aged macOS heap drains cleanly");
+        {
+            tex_t big = target(&pool, 95401, 0, 3072, 2048); mtl_tex_init(&big);
+            id<MTLTexture> tbig = tex_mtl(&big); MTLSizeAndAlign nb = [g_dev heapTextureSizeAndAlignWithDescriptor:tex_desc(&big, 0)];
+            CHECK(tbig && tbig.heap && tbig.heap.size >= nb.size && tbig.heap.size <= nb.size + RH_SLACK + 65536, "a large target's new heap is at most RH_SLACK larger than it");
+            tbig = nil; mtl_tex_release(&big); mtl_alias_drop_pool(&pool); settle();
+        }
+        os_unfair_lock_lock(&g_rh_lk); for (unsigned i = 0; i < g_rh_n; i++) g_rh[i].t -= RH_IDLE_NS; os_unfair_lock_unlock(&g_rh_lk);
+        rh_trim();
         rh_test_set(0, 0, 0, 0);
     }
     mtl_sub_commit(); mtl_drain(); free(mem);

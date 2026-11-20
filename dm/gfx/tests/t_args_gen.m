@@ -94,5 +94,50 @@ int main(void) { @autoreleasepool {
     CHECK(x[0] == 2, "the first two dispatches wrote the first storage binding");
     CHECK(y[0] == 34 && y[1] == 0xb, "after the change every dispatch wrote the new binding, with the uniform buffer bound at the time");
     composite_slots();
+    // args_cbuf_only patch across an arena rollover: allocate the patched block at the end of the current arena,
+    // then let cbsize_table inside the patch loop roll g_cur_arena over to a new arena.
+    {
+        id<MTLLibrary> lib2 = [g_dev newLibraryWithSource:@"#include <metal_stdlib>\nusing namespace metal;\n"
+            "struct Args2 { device uint *p [[id(0)]]; constant uint *c [[id(1)]]; constant uint *sz [[id(2)]]; };\n"
+            "kernel void vc(constant Args2 &a [[buffer(0)]]) { a.p[0] += a.c[0] + (a.sz[0] > 0 ? 1u : 0u); }\n" options:nil error:&error];
+        CHECK(lib2 != nil, "synthetic cbsize shader compiles");
+        NvShader *vc = [NvShader new]; vc->stage = 2; vc->fn = [lib2 newFunctionWithName:@"vc"]; vc->rf.nb = 3;
+        snprintf(vc->key, sizeof vc->key, "72000000000000ff_c");
+        vc->ae = [vc->fn newArgumentEncoderWithBufferIndex:0]; vc->arg_len = vc->ae.encodedLength;
+        vc->rf.b[0] = (nvn_rbind){.kind = NVN_RB_SBUFP, .rw = 1, .reg = 0, .aid = 0};
+        vc->rf.b[1] = (nvn_rbind){.kind = NVN_RB_CBUF, .reg = 0, .aid = 1};
+        vc->rf.b[2] = (nvn_rbind){.kind = NVN_RB_CBSIZE, .reg = 0, .aid = 2};
+        id<MTLComputePipelineState> pvc = [g_dev newComputePipelineStateWithFunction:vc->fn error:&e];
+        CHECK(pvc != nil, "cbsize pipeline");
+
+        x[0] = 0;
+        mtl_sub_begin(); state_reset();
+        id<MTL4ComputeCommandEncoder> en2 = enc_c_begin(NULL); args_dirty_all();
+        bind_ssbo(x); bind_ubo(u1);
+        #define RUN2(sh, ps) do { CHECK(encode_args((id<MTLCommandEncoder>)en2, sh, 2, 0), #sh " encoded"); enc_c_pso(en2, ps); enc_c_dispatch(en2, MTLSizeMake(1,1,1), MTLSizeMake(1,1,1)); \
+                                  [en2 barrierAfterEncoderStages:MTLStageDispatch beforeEncoderStages:MTLStageDispatch visibilityOptions:MTL4VisibilityOptionDevice]; } while (0)
+        RUN2(vc, pvc);   // full encode: x[0] += u1[0] + 1 (= 2)
+
+        bind_ubo(u2);
+        size_t arg_step = (vc->arg_len + 255) & ~(size_t)255;
+        if (!g_cur_arena || g_cur_arena->used + arg_step > g_cur_arena->len) {
+            id<MTLBuffer> tmp; arena_alloc(arg_step, &tmp);
+        }
+        g_cur_arena->used = g_cur_arena->len - arg_step;
+        NvArena *old_arena = g_cur_arena;
+        size_t expected_off = old_arena->used;
+        uint64_t expected_gpu = old_arena->gpu + expected_off;
+
+        uint64_t p_before = patch_n();
+        RUN2(vc, pvc);   // patched encode across arena rollover: x[0] += u2[0] + 1 (= 17 -> total 19)
+        CHECK(patch_n() == p_before + 1, "cbsize shader used args_cbuf_only patch path");
+        CHECK(g_cur_arena != old_arena, "cbsize_table inside patch rolled over to a new arena");
+        CHECK(vc->ab_buf == old_arena->buf && vc->ab_off == expected_off, "patched block stayed in the old arena at the expected offset");
+        CHECK(vc->ab_gpu == expected_gpu, "patched block GPU address matches its own arena, not the rolled-over arena");
+        enc_c_end(en2);
+        CHECK(mtl_wait(mtl_sub_commit(), 5000000000ull), "rollover submission completed"); mtl_drain();
+        CHECK(x[0] == 19, "GPU read the patched argument block from the old arena");
+        #undef RUN2
+    }
     printf("t_args_gen: %d checks, %d failed\n", checks, failed); return failed != 0;
 } }

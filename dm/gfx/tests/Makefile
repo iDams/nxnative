@@ -47,6 +47,15 @@ t_transform_feedback: t_transform_feedback.m $(MTL_T_DEP)
 .PHONY: check_t_transform_feedback
 check_t_transform_feedback: t_transform_feedback
 	DM_TEST_TRANSFORM_FEEDBACK="$(CURDIR)/t_transform_feedback" MTL_DEBUG_LAYER=1 python3 -m unittest test_transform_feedback.py
+# Per-frame arena blocks: shared between submissions, released above the keep count once idle, never while a pending submission holds them (t_arena_trim.m)
+t_arena_trim: t_arena_trim.m $(MTL_T_DEP)
+	clang $(CFLAGS) -fobjc-arc -o $@ t_arena_trim.m $(MTL_T_SRC) $(FW)
+.PHONY: check_t_arena_trim
+check_t_arena_trim: t_arena_trim
+	DM_NVN_ENC_THREAD=0 MTL_DEBUG_LAYER=1 ./t_arena_trim
+	DM_NVN_ENC_THREAD=1 MTL_DEBUG_LAYER=1 ./t_arena_trim
+	DM_NVN_ARENA_TRIM=0 MTL_DEBUG_LAYER=1 ./t_arena_trim
+	DM_NVN_ARENA_SHARE=0 MTL_DEBUG_LAYER=1 ./t_arena_trim
 t_gfx_suspend: t_gfx_suspend.c ../nvn/hle_nvn.c ../../host/crash.c ../../host/hle_bigstack.c t_host_stubs.c $(GFX) $(GFX_H)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_gfx_suspend.c ../../host/crash.c ../../host/hle_bigstack.c t_host_stubs.c $(GFX) $(FW)
 t_nvn: t_nvn.c ../nvn/hle_nvn.c ../../host/crash.c ../../host/hle_bigstack.c t_host_stubs.c $(GFX) $(GFX_H)
@@ -222,6 +231,9 @@ check_t_gmem_words: t_gmem_words
 t_pool_notes: t_pool_notes.m $(MTL_T_DEP)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_pool_notes.m ../../host/crash.c ../../host/hle_bigstack.c t_host_stubs.c $(filter-out ../nvn/nvn_mtl.m,$(GFX)) $(FW)
 check_t_pool_notes: RUN_ENV = MTL_DEBUG_LAYER=1
+t_pool_replay: t_pool_replay.m $(MTL_T_DEP)
+	clang $(CFLAGS) -fobjc-arc -o $@ t_pool_replay.m ../../host/crash.c ../../host/hle_bigstack.c t_host_stubs.c $(filter-out ../nvn/nvn_mtl.m,$(GFX)) $(FW)
+check_t_pool_replay: RUN_ENV = MTL_DEBUG_LAYER=1
 t_htab_update: t_htab_update.m $(MTL_T_DEP)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_htab_update.m $(MTL_T_SRC) $(FW)
 check_t_htab_update: RUN_ENV = MTL_DEBUG_LAYER=1
@@ -335,6 +347,14 @@ check_t_cpu_storage: RUN_ENV = MTL_DEBUG_LAYER=1
 t_initial_uncached: t_initial_uncached.m $(MTL_T_DEP)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_initial_uncached.m $(MTL_T_SRC) $(FW)
 check_t_initial_uncached: RUN_ENV = MTL_DEBUG_LAYER=1
+t_upload_idle: t_upload_idle.m $(MTL_T_DEP)
+	clang $(CFLAGS) -fobjc-arc -o $@ t_upload_idle.m $(MTL_T_SRC) $(FW)
+.PHONY: check_t_upload_idle
+check_t_upload_idle: t_upload_idle
+	env -u DM_NVN_UPLOAD_IDLE_MS DM_NVN_UPLOAD_REUSE=1 MTL_DEBUG_LAYER=1 ./t_upload_idle
+	DM_NVN_UPLOAD_IDLE_MS=0 DM_NVN_UPLOAD_REUSE=1 MTL_DEBUG_LAYER=1 ./t_upload_idle
+	DM_NVN_UPLOAD_IDLE_MS=2000 DM_NVN_UPLOAD_REUSE=1 DM_NVN_ENC_THREAD=0 MTL_DEBUG_LAYER=1 ./t_upload_idle
+	DM_NVN_UPLOAD_IDLE_MS=2000 DM_NVN_UPLOAD_REUSE=1 DM_NVN_ENC_THREAD=1 MTL_DEBUG_LAYER=1 ./t_upload_idle
 t_upload_slots: t_upload_slots.m $(MTL_T_DEP)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_upload_slots.m $(MTL_T_SRC) $(FW)
 .PHONY: check_t_upload_slots
@@ -524,6 +544,9 @@ check_t_clear_ds: RUN_ENV = MTL_DEBUG_LAYER=1
 t_clear_layers: t_clear_layers.m $(MTL_T_DEP)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_clear_layers.m $(MTL_T_SRC) $(FW)
 check_t_clear_layers: RUN_ENV = MTL_DEBUG_LAYER=1
+t_zero_colour: t_zero_colour.m $(MTL_T_DEP)
+	clang $(CFLAGS) -fobjc-arc -o $@ t_zero_colour.m $(MTL_T_SRC) $(FW)
+check_t_zero_colour: RUN_ENV = MTL_DEBUG_LAYER=1
 t_clear_tex: t_clear_tex.m $(MTL_T_DEP)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_clear_tex.m $(MTL_T_SRC) $(FW)
 .PHONY: check_t_clear_tex

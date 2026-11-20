@@ -4,7 +4,7 @@
 
 #include <stdint.h>
 
-enum { RH_CAP = 256u << 20 };
+enum { RH_CAP = 256u << 20, RH_SLACK = 4u << 20 };
 #define RH_IDLE_NS 3000000000ull
 
 typedef struct {
@@ -37,6 +37,7 @@ static inline int rh_entry_expired(uint64_t now, uint64_t entry_t, uint64_t idle
 static inline uint64_t rh_alloc_size(uint64_t size, int exact_alloc) {
     if (exact_alloc) return size;
     uint64_t extra = size / 8;
+    if (extra > (uint64_t)RH_SLACK) extra = (uint64_t)RH_SLACK;
     return size > UINT64_MAX - extra ? UINT64_MAX : size + extra;
 }
 
