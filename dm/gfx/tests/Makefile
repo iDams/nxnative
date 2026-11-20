@@ -114,8 +114,12 @@ t_fstep: t_fstep.c ../nvn/nvn_fstep.h
 	clang -O1 -Wall -o $@ t_fstep.c
 t_thread_rt: t_thread_rt.c ../nvn/nvn_rt.h
 	clang -O1 -Wall -o $@ t_thread_rt.c
-t_link_drain: t_link_drain.c ../nvn/nvn_link_drain.h
+t_link_drain: t_link_drain.c ../nvn/nvn_link_drain.h ../nvn/nvn_link_latch.h
 	clang -O1 -Wall -o $@ t_link_drain.c
+t_link_latch_cb: t_link_latch_cb.m $(MTL_T_DEP)
+	clang $(CFLAGS) -fobjc-arc -o $@ t_link_latch_cb.m $(MTL_T_SRC) $(FW)
+t_link_latch: t_link_latch.c ../nvn/nvn_link_latch.h
+	clang -O1 -Wall -o $@ t_link_latch.c
 t_thermal: t_thermal.c $(MTL_T_DEP)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_thermal.c $(MTL_T_SRC) ../nvn/nvn_mtl.m $(FW)
 t_thermal_tsan: t_thermal.c $(MTL_T_DEP)
@@ -249,6 +253,7 @@ t_present_crop: t_present_crop.m ../nvn/hle_nvn.c ../../host/crash.c ../../host/
 	clang $(CFLAGS) -fobjc-arc -o $@ t_present_crop.m ../../host/crash.c ../../host/hle_bigstack.c t_host_stubs.c $(filter-out ../nvn/nvn_mtl.m,$(GFX)) $(FW)
 .PHONY: check_t_present_crop
 check_t_present_crop: t_present_crop
+	DM_PRESENT_LINK=0 MTL_DEBUG_LAYER=1 ./t_present_crop --external-screenshots
 	DM_PRESENT_SNAP=0 DM_NVN_ENC_THREAD=0 ./t_present_crop
 	DM_PRESENT_SNAP=0 DM_NVN_ENC_THREAD=1 ./t_present_crop
 	DM_PRESENT_SNAP=1 DM_NVN_ENC_THREAD=0 ./t_present_crop
@@ -428,8 +433,20 @@ t_rt_depth_ro: t_rt_depth_ro.m $(MTL_T_DEP)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_rt_depth_ro.m $(MTL_T_SRC) $(FW)
 t_pso_pending: t_pso_pending.m $(MTL_T_DEP)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_pso_pending.m $(MTL_T_SRC) $(FW)
+t_pso_demand_record: t_pso_demand_record.m $(MTL_T_DEP)
+	clang $(CFLAGS) -fobjc-arc -o $@ t_pso_demand_record.m $(MTL_T_SRC) $(FW)
+.PHONY: check_t_pso_demand_record
+check_t_pso_demand_record: t_pso_demand_record
+	MTL_DEBUG_LAYER=1 ./t_pso_demand_record
+	MTL_DEBUG_LAYER=1 ./t_pso_demand_record --off
+	MTL_DEBUG_LAYER=1 ./t_pso_demand_record --cap
 t_shmap_warm: t_shmap_warm.m $(MTL_T_DEP)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_shmap_warm.m $(MTL_T_SRC) $(FW)
+t_pso_bg_look: t_pso_bg_look.m $(MTL_T_DEP)
+	clang $(CFLAGS) -fobjc-arc -o $@ t_pso_bg_look.m $(MTL_T_SRC) $(FW)
+.PHONY: check_t_pso_bg_look
+check_t_pso_bg_look: t_pso_bg_look
+	MTL_DEBUG_LAYER=1 ./t_pso_bg_look
 t_pso_depth_stencil: t_pso_depth_stencil.m $(MTL_T_DEP)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_pso_depth_stencil.m $(MTL_T_SRC) $(FW)
 .PHONY: check_t_pso_depth_stencil

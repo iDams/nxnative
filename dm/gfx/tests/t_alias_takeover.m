@@ -108,6 +108,12 @@ int main(void) { @autoreleasepool {
         own_alias_take_over_locked(&big3);
         CHECK(!has(&big2) && ast().taken - t2 == n2 - ast().n && n2 - ast().n == 1u + (has(&after) ? 0 : !over), "an entry that spans several of the new texture's cells is taken once");
         seen_put(&big3, obj());
+        {   // a spared entry (looked up in this submission) that spans every cell of the new texture is looked at once, not once per cell
+            alias_key big4 = akey(P, 0, NVN_FORMAT_RGBA16F, 512); uint64_t l0 = ast().looks; int64_t cells = ((ksize(&big4) < ksize(&big3) ? ksize(&big4) : ksize(&big3)) - 1) >> ALIAS_CELL;
+            own_alias_take_over_locked(&big4);
+            CHECK(cells >= 4 && has(&big3), "the entry looked up lately stays");
+            CHECK(ast().looks - l0 == 1u + (has(&after) && after.off < ksize(&big4)), "and is looked at once, though it lies in every cell of the new texture");
+        }
         pthread_mutex_unlock(&g_smu);
         mtl_alias_drop_pool(P);
         pthread_mutex_lock(&g_smu);
