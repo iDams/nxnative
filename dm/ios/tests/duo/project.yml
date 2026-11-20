@@ -8,12 +8,14 @@ targets:
     platform: iOS
     sources:
       - path: Sources
+      - path: ../../Sources/AmiiboScan.swift
       - path: ../../Sources/DmHostingController.swift
       - path: ../../Sources/GameMenu.swift
       - path: ../../Sources/LauncherSettings.swift
       - path: ../../Sources/DmGamepad.m
       - path: ../../Sources/front_ios.m
     dependencies:
+      - sdk: CoreNFC.framework
       - sdk: UIKit.framework
       - sdk: GameController.framework
       - sdk: SwiftUI.framework

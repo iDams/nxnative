@@ -18644,7 +18644,16 @@ __attribute__((weak)) int front_screen_variable_refresh(void) { return 0; }   //
 // frame presented right after a tick waits one tick of the link whatever the frame rate, and the drain moves the game onto the 60 Hz ticks between the callback's takes:
 // 15.5 ms in the queue at 30 fps on the 60 Hz link against 32.2 ms on the 30 Hz one (Ocarina of Time in a window: 65 against 82 ms from the game's present to the screen),
 // for 60 callbacks a second instead of 30. Without the drain the 60 Hz link gains nothing reliably: the takes stay on the acquire's ticks or not as the last late frame left them
-static int link_30hz(void) { return front_fullscreen() ? front_screen_variable_refresh() : !link_drain_on() || mtl_snap_on(); }
+// DM_LINK_30HZ=1 / 0 sets the link at a 30 fps target (frame generation off): 30 Hz, or 60 Hz with each frame held two ticks. L6.5 made 60 Hz the iPhone's default on the idea
+// that iOS lowers the GPU clock to fill the 30 Hz link's 33.3 ms; it did not hold: Ocarina of Time, iPhone 18 Pro, render scale 0.6, GPU p50 28-30 ms in play on the 30 Hz link
+// (log 51) and 29-30 ms on the 60 Hz one (log 52), with no fewer frames late. L6.6 is back on the 30 Hz link; the switch stays for comparing them
+static int link_30hz(void) {
+    static int env = -2;
+    if (env == -2) { const char *e = getenv("DM_LINK_30HZ"); env = e && *e ? atoi(e) != 0 : -1;
+        if (env >= 0) MLOG("display link at a 30 fps target: %s", env ? "30 Hz (DM_LINK_30HZ=1)" : "60 Hz, each frame held two ticks (DM_LINK_30HZ=0)"); }
+    if (env >= 0) return env;
+    return front_fullscreen() ? front_screen_variable_refresh() : !link_drain_on() || mtl_snap_on();
+}
 // The 120 Hz link (mode 2, a frame every other tick) in place of the 60 Hz one in fullscreen on a variable-refresh screen whose rate is a multiple of 120 (a ProMotion
 // screen), unless DM_PRESENT_LINK chose the mode. There, with the 60 Hz link at frame latency 2, the system showed every present one 120 Hz refresh after the link's
 // target time (@pres_at_ms − @link_target_ms = 8.33 ms) and the link then skipped every other tick (@link_gap_ms 16.7, 33.3, 16.7, …): 40 callbacks a second, so a game

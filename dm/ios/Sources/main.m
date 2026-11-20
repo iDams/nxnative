@@ -4,6 +4,7 @@
 #import <Metal/Metal.h>
 #include <pthread.h>
 #include <signal.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -102,9 +103,12 @@ static void aoc_locate(void) {
 // Why a slim build found no usable game files: the verdict on Documents/romfs.img (the first of romfs_document_images), in the log and for the screen (front_ios_boot_message). NULL when the build has no romfs.id
 static char g_boot_message[640];
 const char *front_ios_boot_message(void) { return g_boot_message[0] ? g_boot_message : NULL; }
+static bool g_hud_enabled_from_saved_choice;
+bool front_ios_hud_enabled_from_saved_choice(void) { return g_hud_enabled_from_saved_choice; }
+
 // Why this device cannot run the games: its GPU has no BC texture formats, which the games' textures use and the host does not decompress (dm/gfx/tex/README.md; the A16 and older,
 // GitHub issue #704), so the screen says so instead of Metal aborting at the game's first BC texture. NULL on a supported device. Called by startGame (front_ios.m) once the launcher has set
-// its switches: this makes the process's first Metal device, and Metal reads MTL_HUD_ENABLED then; checked at launch, it kept the launcher's Performance HUD off (GitHub issue #840)
+// its switches, so this device check gives front_hud_env() a chance to enable the Performance HUD at Play (GitHub issue #840).
 const char *front_ios_device_check(void) {
     static char msg[320]; static int done;
     if (done++) return msg[0] ? msg : NULL;
@@ -178,7 +182,18 @@ static int boot_env(void) {
     }
     setenv("DM_ENV_FILE_KEYS", [from_file componentsJoinedByString:@" "].UTF8String, 1);   // the launcher keeps what an env file set (LauncherSettings.swift)
     setenv("DM_ENV_LAUNCH_KEYS", [from_launch componentsJoinedByString:@" "].UTF8String, 1);   // and what the launch environment set (docs/frontends.md, Saved choices)
-    front_hud_env();   // an env file's DM_METAL_HUD; nothing in this process makes a Metal device before startGame (front_ios.m), which applies the launcher's
+    front_hud_env();   // DM_METAL_HUD from the launch environment or an env file
+    // On the M4 iPad Air, setting MTL_HUD_ENABLED at Play was too late. Apply the saved choice before UIApplicationMain (GitHub issue #840).
+    const char *ignore_saved = getenv("DM_SAVED_CHOICES");
+    if (!getenv("DM_METAL_HUD") && !getenv("MTL_HUD_ENABLED") && (!ignore_saved || strcmp(ignore_saved, "0"))) {
+        id saved = [NSUserDefaults.standardUserDefaults objectForKey:@"launcher.DM_METAL_HUD"];
+        if ([saved isKindOfClass:NSString.class] && [saved isEqualToString:@"1"]) {
+            setenv("DM_METAL_HUD", "1", 0);
+            front_hud_env();
+            unsetenv("DM_METAL_HUD");   // Play still sets the app's HUD choice
+            g_hud_enabled_from_saved_choice = getenv("MTL_HUD_ENABLED") != NULL;
+        }
+    }
     // Game language (nn::oe::GetDesiredLanguage, hle_oe.c): the one the IPA was packed with (the NSP script's LANGUAGE / --language → DMLanguage in Info.plist), unless an env file sets DM_LANG
     // (or the launcher, which replaces this default before the game starts)
     NSString *lang = [NSBundle.mainBundle objectForInfoDictionaryKey:@"DMLanguage"];
@@ -235,6 +250,11 @@ static NSString *program_env(void) {
         if ([fm fileExistsAtPath:ov isDirectory:&dir] && dir) { setenv("DM_ROMFS_OVERLAY", ov.fileSystemRepresentation, 0); fprintf(stderr, "boot: game file replacements %s\n", getenv("DM_ROMFS_OVERLAY")); }
         // The in-game menu's Amiibo list (GameMenu.swift) writes the chosen amiibo's ID into Documents/amiibo.txt; the host reads it at each scan (hle_sdk16.c StartDetection, amiibo.h dm_amiibo_select)
         if ([fm fileExistsAtPath:[ov stringByAppendingPathComponent:@"amiibo.tsv"]]) setenv("DM_AMIIBO", [doc stringByAppendingPathComponent:@"amiibo.txt"].fileSystemRepresentation, 0);
+        // Mods (Documents/mods, Mods.swift): the launcher sets DM_MODS at Play; the host merges their size table entries into a copy of the table the build stored
+        // uncompressed beside the overlay (build_ipa.sh, scripts/oot_mods_rstb.py), written into Documents/mods/.merged (hle_fs.c rom_overlay_env, mods.h)
+        NSString *rstb = [res stringByAppendingPathComponent:prog ? [prog stringByAppendingPathComponent:@"mods_rstb.bin"] : @"mods_rstb.bin"];
+        if ([fm fileExistsAtPath:rstb]) setenv("DM_MODS_RSTB", rstb.fileSystemRepresentation, 0);
+        setenv("DM_MODS_WORK", [doc stringByAppendingPathComponent:@"mods/.merged"].fileSystemRepresentation, 0);
     }
     setenv("DM_NVN_SHMAP", [dmdir stringByAppendingPathComponent:@"shader_map.tsv"].fileSystemRepresentation, 0);
     setenv("DM_MSL_DIR", msl.fileSystemRepresentation, 0);

@@ -254,8 +254,7 @@ struct AllSettingsDrawer: View {
                     .listRowBackground(LauncherTheme.row)
                 }
             }
-            .listStyle(.insetGrouped)
-            .listSectionSpacing(.compact)
+            .launcherListStyle()
             .listRowSeparatorTint(LauncherTheme.line)
             .scrollContentBackground(.hidden)
             .contentMargins(.horizontal, 0, for: .scrollContent)
@@ -284,6 +283,12 @@ struct AllSettingsDrawer: View {
         .fixedSize()
     }
 
+}
+
+extension View {
+    @ViewBuilder func launcherListStyle() -> some View {
+        self.listStyle(.insetGrouped).listSectionSpacing(.compact)
+    }
 }
 
 // When the game was last saved: the newest file in the save folder (DM_SAVE), "Today at 9:41 PM"
