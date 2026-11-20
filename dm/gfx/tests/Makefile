@@ -464,7 +464,10 @@ t_res_commit: t_res_commit.m $(MTL_T_DEP)
 check_t_res_commit: RUN_ENV = MTL_DEBUG_LAYER=1
 t_upload_src: t_upload_src.m $(MTL_T_DEP)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_upload_src.m $(MTL_T_SRC) $(FW)
-check_t_upload_src: RUN_ENV = DM_NVN_UP_WINDOWS=0 MTL_DEBUG_LAYER=1
+.PHONY: check_t_upload_src
+check_t_upload_src: t_upload_src
+	DM_NVN_UP_WINDOWS=0 DM_NVN_UP_BATCH_MB=48 MTL_DEBUG_LAYER=1 ./t_upload_src
+	DM_NVN_UP_WINDOWS=0 DM_NVN_UP_BATCH_MB=128 MTL_DEBUG_LAYER=1 ./t_upload_src
 t_upload_budget: t_upload_budget.m $(MTL_T_DEP)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_upload_budget.m $(MTL_T_SRC) $(FW)
 check_t_upload_budget: t_upload_budget
@@ -729,3 +732,10 @@ t_pool_typebridge: t_pool_typebridge.m $(MTL_T_DEP)
 check_t_pool_typebridge: t_pool_typebridge
 	MTL_DEBUG_LAYER=1 DM_NVN_ENC_THREAD=0 ./t_pool_typebridge
 	MTL_DEBUG_LAYER=1 DM_NVN_ENC_THREAD=1 ./t_pool_typebridge
+
+t_texture_quality: t_texture_quality.m $(MTL_T_DEP)
+	clang $(CFLAGS) -fobjc-arc -o $@ t_texture_quality.m $(MTL_T_SRC) $(FW)
+.PHONY: check_t_texture_quality
+check_t_texture_quality: t_texture_quality
+	DM_NVN_TEX_MIP_SKIP=0 MTL_DEBUG_LAYER=1 ./t_texture_quality
+	@for levels in 1 2 3; do DM_NVN_TEX_MIP_SKIP=512 DM_NVN_TEX_MIP_LEVELS=$$levels MTL_DEBUG_LAYER=1 ./t_texture_quality || exit $$?; done

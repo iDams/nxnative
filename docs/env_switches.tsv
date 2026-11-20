@@ -220,6 +220,8 @@ DM_NVN_REUPLOADS	diagnostic	`=1` logs the first 400 re-uploads of textures taken
 DM_NVN_RP_AREA	switch	`0` makes passes on targets of 16 M pixels or more cover the whole target, as before; by default a draw pass that loads what it keeps stops at the far corner of its scissor when that is at most half the target
 DM_NVN_RT_CONTINUE	switch	`0` ends the pass whenever the game sets render targets, as before; by default SetRenderTargets naming the open pass's targets continues the pass
 DM_NVN_RT_DEAD	switch	`0` keeps every shared render target of a GPU-only pool while a texture object names it, as before; by default one another target drew over and that has not been used for 3 s is released once a second, and made again at its next use (`ab` alternates it with the `DM_AB` phases)
+DM_NVN_RT_DEAD_EVERY	switch	`=<deciseconds>` (default 2): how often the render targets drawn over and unused are released (DM_NVN_RT_DEAD); 10 is the pacing before kid-with-sword-remake L6.3
+DM_NVN_RT_DEAD_MAX	switch	`=<textures>` (default 32): the most render targets one release pass lets go; past 64 (SER_NOTES) the next submission sends every texture ID down the slow path, a 120-250 ms frame on an iPhone; 256 is the limit before kid-with-sword-remake L6.3
 DM_NVN_RT_RANGE	switch	`=1` (experimental, off by default; with `DM_NVN_TBDR=1`) keeps the pass open when the game sets the same colour and depth target again with a view that differs only in its level count
 DM_NVN_RT_RANGE_CHECK	diagnostic	With `DM_NVN_RT_RANGE=1` and `DM_NVN_PASSDUMP`, renders a candidate pass both ways in the same frame and logs and writes the comparison (`CHECK_RESULTS.tsv`, `[RED]` on a difference)
 DM_NVN_RT_RECYCLE	switch	`0` makes each render target in a GPU-only pool, each feedback snapshot and each resolution family heap its own exact Metal allocation, freed with its texture, as before; by default they are placed in heaps from one free list, and a freed one's heap waits, resident, for the next texture it fits (`ab` alternates it with the `DM_AB` phases)
@@ -245,6 +247,8 @@ DM_NVN_TEXDUMP	diagnostic	`=<frame>:<path>`, `size=<W>x<H>:<path>` or `layers=<n
 DM_NVN_TEXINFO	diagnostic	`=<W>x<H>` logs storage and description of every texture of that size on first use, registration and initialization (pool, flags, packaged, non-zero bytes, swizzles)
 DM_NVN_TEXRAW	diagnostic	`=<serial>,…` or `info` (the textures `DM_NVN_TEXINFO` picked out): saves those textures' raw bytes at the `DM_NVN_TEXDUMP` frame, with a text header line
 DM_NVN_TEXSNAP	diagnostic	`=<in-frame pass index>,…`: with `DM_NVN_TEXDUMP`, copies those passes' colour attachments as they end and saves them with the end-of-frame dump
+DM_NVN_TEX_MIP_LEVELS	player	With `DM_NVN_TEX_MIP_SKIP`, how many finest levels to leave out, `1` (default) to `3`; at least one level is kept
+DM_NVN_TEX_MIP_SKIP	player	`=<pixels>` (`1` = 512): CPU-written compressed 2D, array and cube textures at least that size on their shorter side are made without their finest level(s) (`DM_NVN_TEX_MIP_LEVELS`): about a quarter of their memory and of their upload; render targets and shader-written textures are unchanged; `0` or unset keeps every level (the launcher's Texture Memory Saver; on by default on iPhone)
 DM_NVN_TREG_ID	diagnostic	`=<n>` logs every registration of texture ID n: what it holds from then on, and the frame being recorded
 DM_NVN_TSV	diagnostic	`=<path>` writes the per-frame NVN call table and timing rows (frame, metric, value) to a TSV, read by `scripts/bench.py`
 DM_NVN_TSV_CALLS	diagnostic	`0` makes `DM_NVN_TSV` write only the timing rows, without the call counts (about two thirds of the file)
@@ -260,6 +264,7 @@ DM_NVN_UB_PARTIAL	switch	`0`: a uniform block the deferred updates cover only in
 DM_NVN_UDC_AB	diagnostic	`=1` starts with the DontCare store for unwritten attachments off and turns it on after the second screenshot, for an on/off picture comparison in one run
 DM_NVN_UNWRITTEN_DC	switch	`0` disables optional stores elided for loaded, unchanged attachments (on by default, independent of TBDR lookahead), for equivalence comparisons; mandatory image-write preservation stays active
 DM_NVN_UPLOAD_REUSE	switch	0 keeps the original one-block upload-slot policy; default retains bounded demand-sized primary and overflow buffers after completion.
+DM_NVN_UP_BATCH_MB	switch	`=<MB>` (16 to 512): an upload batch is committed once its staging and the guest memory its uploads read through their own source buffers reach this much (default 48 on iOS, 128 on the Mac); a player may set it in Documents/env.txt
 DM_NVN_UP_WINDOWS	switch	`0` allocates one Metal buffer per texture upload instead of keeping bounded resident zero-copy upload windows (`upw_get`); default on (`1`) to avoid residency-set churn
 DM_NVN_VBUF_CACHE	switch	`0` turns off the cache of resolved vertex stream addresses and vertex argument table writes across draws (on by default), for A/B runs
 DM_NVN_VCONV_CHECK	diagnostic	`=1` scans the indices again at every reuse of a cached vertex conversion range (`vconv_range`) and reports differences
@@ -326,6 +331,8 @@ DM_PSO_HYBRID	switch	`0`: a draw whose pipeline is not built yet waits for it in
 DM_PSO_IOS_MIN	switch	`build_ipa.sh`: the minimum iOS version of the offline pipeline archives (default the SDK's major version); a device of another major version cannot open them and builds the bases itself
 DM_PSO_MANIFEST	path	The prewarm manifest to use instead of the profile's `pso_manifest.tsv`; `off` turns the prewarm off
 DM_PSO_MTL4	player	`0` builds render pipelines through the `MTLDevice` with no bases and no archive; `1` uses MTL4Compiler with the archive, hybrid pipelines and prebuild (default on on the Mac, the profile's `pso_mtl4` on iOS)
+DM_PSO_NOWAIT	switch	`0` waits on the submit thread when a draw's pipeline needs a compile and has no pulling stand-in; by default (in an app, where the prepare step runs) a worker builds it and draws wait up to `DM_PSO_NOWAIT_MS`
+DM_PSO_NOWAIT_MS	switch	`=<ms>` (default 50): how long a frame's draws wait in all for background `DM_PSO_NOWAIT` pipeline builds before the draw is skipped until built
 DM_PSO_PAIRS	path	The prebuild's second shader pair table (default: `pso_pairs.tsv` beside the shader map)
 DM_PSO_PREBUILD	player	`0` turns off the prebuild of every known shader pair's pulling base into the pipeline archive (on by default); `tool` runs the prebuild alone on the Mac and exits
 DM_PSO_PREBUILD_DEPTH	switch	`zero`: the prebuild tool (`DM_PSO_PREBUILD=tool`) builds bases for the near = 0 depth mode; the NSP script sets it from the profile's `depth_mode`
@@ -362,6 +369,7 @@ DM_ROOT	path	Workspace root (default `~/dm-work`): the host's and tools' default
 DM_RT	diagnostic	`0` leaves every host thread on its QoS only, with no Mach time-constraint policy declaring the frame deadline: the thread that acquires the window, the queue replay thread and the encode thread (on by default; for power A/B)
 DM_RT_COMP	switch	`=<ms>` fixes the computation the acquiring thread's time-constraint policy declares; default `auto` re-declares it every 120 frames from that thread's per-frame CPU time (p90 and peak). The replay and encode threads always measure their own
 DM_RT_FRAME	diagnostic	`0` keeps the time-constraint policy on the thread that acquires the window only; the queue replay and encode threads stay on their QoS (on by default; for phone A/B)
+DM_RT_SHARE	switch	`=<acquire>,<frame threads>`: the largest share of the frame period each thread may declare as its time-constraint computation (default `0.4,0.55` on iOS, where two performance cores carry the frame; `0.9,0.9` elsewhere)
 DM_RUMBLE	player	`0` turns game rumble off (on by default); launcher setting
 DM_RUMBLE_GAIN	player	`=0..3` scales the rumble strength (default 1, `0` is silent); launcher setting
 DM_RUMBLE_LOG	diagnostic	`=1` logs the game's vibration handle requests and, once a second, the values it sent, how many had no routed output and the peak amplitude
@@ -386,6 +394,7 @@ DM_SLOWFRAME	diagnostic	`=1` writes the per-frame timing breakdown to the log on
 DM_SPIN	switch	`0` makes the rewriter's spin gate return at once, so guest poll loops spin with no sleep; the gate stays (on by default)
 DM_SPIN_LIST	diagnostic	`=1` makes `patch_nso.py` print every guest poll loop it found and sends through a spin gate
 DM_SPIN_POLL	switch	`=<µs>`: how long a spin-gate wait polls before it sleeps with the yield back-off (default 2000; `0` yields on every pass)
+DM_STALL_DUMP	switch	`0` turns off the GPU stall watchdog (`hle_nvn.c`), which dumps every guest thread's live wait when presented frames stop for 5 s with graphics running
 DM_SVC	diagnostic	`=1` logs memory SVCs (`SetHeapSize`, `MapMemory`, `Map`/`UnmapPhysicalMemory`) with their addresses and sizes
 DM_SW2	player	`=1` turns on Switch 2 controllers over Bluetooth LE (Joy-Con 2, Pro Controller 2): the settings window's Switch 2 controllers. Off, no Bluetooth client is created and macOS asks nothing. The host also stays off when the app's Info.plist has no NSBluetoothAlwaysUsageDescription, without which macOS ends the process at the first Bluetooth scan
 DM_SW2_GYRO_DPS	diagnostic	`=<degrees per second per count>` is the Switch 2 controllers' gyro scale (default 0.0607, measured on a left and a right Joy-Con 2; the Switch family's nominal 0.070 turned a 90 degree tilt into 104)
